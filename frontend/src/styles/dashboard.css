@@ -1,0 +1,322 @@
+/* ── SYSTEM VARIABLES (FALLBACKS) ────────────────────────── */
+:root {
+  --s1: #1c1c1e;
+  --s2: #2c2c2e;
+  --bg: #000000;
+  --b: rgba(255, 255, 255, 0.1);
+  --fg: #ffffff;
+  --muted: #eaeaea;
+  --glow: #0a84ff;
+  --g: #30d158;
+  --r: #ff453a;
+  --acc: #5ac8fa;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* ── DASHBOARD TAB CONTAINER ────────────────────────────── */
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  padding: 16px;
+}
+
+/* ── STATS CARDS GRID ───────────────────────────────────── */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.stat-card, .emoji-card {
+  background: linear-gradient(145deg, var(--s1), rgba(28, 28, 30, 0.7));
+  border: 1px solid var(--b);
+  border-radius: 16px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(5px);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.stat-card:hover, .emoji-card:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  transform: translateY(-4px);
+}
+
+.stat-card__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.stat-card__value {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  color: var(--fg);
+  font-family: var(--mono);
+  margin: 4px 0;
+}
+
+.stat-card__sub, .emoji-card__sub {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+/* ── EMOJI CARD SPECIALS ────────────────────────────────── */
+.emoji-card {
+  align-items: flex-start;
+}
+
+.emoji-card__icon {
+  font-size: 32px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+}
+
+.emoji-card__label {
+  font-size: 18px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+/* ── SIDE-BY-SIDE CHART ROW ────────────────────────────── */
+.chart-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: 100%;
+}
+
+/* ── CHART CONTAINER BOX ───────────────────────────────── */
+.chart-box {
+  background: var(--s1);
+  border: 1px solid var(--b);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-box__title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+
+.chart-box__sub {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.6;
+  margin-bottom: 24px;
+}
+
+/* ── PIE CHART SIDE-BY-SIDE INTERNAL LAYOUT ────────────── */
+.pie-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  width: 100%;
+  height: 100%;
+}
+
+/* Forces Recharts container to share row nicely */
+.pie-row > .recharts-responsive-container {
+  flex: 1 1 50% !important;
+  max-width: 50%;
+}
+
+.pie-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 50%;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+
+/* Modern minimalist scrollbar for long legends */
+.pie-legend::-webkit-scrollbar {
+  width: 4px;
+}
+.pie-legend::-webkit-scrollbar-thumb {
+  background: var(--b);
+  border-radius: 4px;
+}
+
+.pie-legend__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+
+.pie-legend__item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.05);
+}
+
+.pie-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.pie-legend__name {
+  flex: 1;
+  color: var(--fg);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pie-legend__val {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.pie-legend__pct {
+  color: var(--muted);
+  opacity: 0.5;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+/* ── DYNAMIC COLOR UTILITIES ────────────────────────────── */
+.v--profit { color: var(--g); text-shadow: 0 0 10px rgba(48, 209, 88, 0.15); }
+.v--loss   { color: var(--r); text-shadow: 0 0 10px rgba(255, 69, 58, 0.15); }
+.v--blue   { color: var(--glow); text-shadow: 0 0 10px rgba(10, 132, 255, 0.15); }
+.v--purple { color: #bf5af2; text-shadow: 0 0 10px rgba(191, 90, 242, 0.15); }
+
+/* ── EMPTY STATE SYSTEM ─────────────────────────────────── */
+.chart-empty {
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--muted);
+  opacity: 0.5;
+  font-size: 14px;
+  border: 1px dashed var(--b);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+/* ── BREAKPOINTS & RESPONSIVENESS ───────────────────────── */
+@media (max-width: 1024px) {
+  /* Collapse the side-by-side chart row down to stacked rows on smaller desktops/tablets */
+  .chart-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .stat-grid {
+    grid-template-columns: 1fr 1fr; /* 2-column grid layout on mobile */
+  }
+  
+  /* Stack the emoji card wide if odd-one-out */
+  .emoji-card {
+    grid-column: span 2;
+  }
+
+  .pie-row {
+    flex-direction: column; /* Stack visual pie above legend text on small screens */
+    gap: 16px;
+  }
+
+  .pie-row > .recharts-responsive-container {
+    max-width: 100%;
+    flex: 1 1 100% !important;
+  }
+
+  .pie-legend {
+    width: 100%;
+    max-height: none;
+  }
+}
+/* ── Dashboard mode switcher ────────────────────────────── */
+.dash-switcher {
+  display: flex;
+  gap: 8px;
+  background: var(--s1);
+  border: 1px solid var(--b);
+  border-radius: 14px;
+  padding: 6px;
+  width: fit-content;
+  margin-bottom: 4px;
+}
+
+.dash-switch-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 8px 20px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  transition: all 0.18s;
+}
+
+.dash-switch-btn:hover {
+  background: var(--s2);
+  color: var(--fg);
+}
+
+.dash-switch-btn--active {
+  background: rgba(10, 132, 255, 0.15);
+  border-color: rgba(10, 132, 255, 0.35);
+  color: var(--glow);
+}
+
+/* ── Empty state for charts ─────────────────────────────── */
+.chart-empty {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--b);
+  border-radius: 10px;
+  padding: 24px;
+  font-style: italic;
+  opacity: 0.6;
+}
+
+/* ── Responsive tweaks ──────────────────────────────────── */
+@media (max-width: 640px) {
+  .dash-switcher { width: 100%; }
+  .dash-switch-btn { flex: 1; text-align: center; padding: 8px 10px; font-size: 12px; }
+}
