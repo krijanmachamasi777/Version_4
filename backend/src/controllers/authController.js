@@ -1,16 +1,27 @@
 ﻿// src/controllers/authController.js
 //
-// CHANGES FROM ORIGINAL:
-//   • On first login (new user), runFullSync() is now AWAITED before the
-//     response is sent, so the frontend always receives DB-backed data.
-//   • On subsequent logins the sync still runs in the background (non-blocking).
-//   • Response now includes `firstLogin: true/false` so the frontend can show
-//     a one-time "data loaded" indicator.
+// SYNC LOGIC IMPLEMENTED:
+//
+// ┌─ DIFFERENT-DAY LOGIN (lastSyncDate != today) ─────────────────────┐
+// │  1. Login to MeroShare                                             │
+// │  2. Fetch all external API data (profile, shares, portfolio, etc.) │
+// │  3. Update MongoDB collections                                     │
+// │  4. Save today's date as lastSyncDate + store meroshareToken       │
+// │  5. Return JWT only AFTER sync completes (blocking)                │
+// └────────────────────────────────────────────────────────────────────┘
+//
+// ┌─ SAME-DAY LOGIN (lastSyncDate == today) ───────────────────────────┐
+// │  1. Login to MeroShare (only to validate credentials)              │
+// │  2. Skip full sync                                                 │
+// │  3. Load data directly from MongoDB                                │
+// │  4. Save the fresh meroshareToken for refresh-sync reuse           │
+// │  5. Return JWT immediately                                         │
+// └────────────────────────────────────────────────────────────────────┘
 //
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const MeroShareClient = require("../services/meroshareClient");
-const { runFullSync } = require("../services/syncService");
+const { runFullSync, todayDateString } = require("../services/syncService");
 const logger = require("../utils/logger");
 const { ensureUserCollections } = require("../utils/userCollections");
 
@@ -67,68 +78,89 @@ exports.login = async (req, res) => {
     return err(res, `Unknown DP code: ${dpCode}.`, 400);
   }
 
-  let client;
-  let userId;
-  let userName;
-  let isFirstLogin = false;
-
   try {
-    client = new MeroShareClient({ clientId, username, password });
+    // ── Step 1: Authenticate with MeroShare to validate credentials ──
+    const client = new MeroShareClient({ clientId, username, password });
     await client.login();
     const profile = await client.getOwnDetails();
 
+    // ── Step 2: Upsert the local User document ───────────────────────
     let user = await User.findOne({ username });
+    const isNewUser = !user;
+
     if (user) {
-      // Returning user — update credentials
-      user.clientId    = clientId;
-      user.password    = password;
-      user.boid        = profile.demat;
-      user.name        = profile.name;
-      user.email       = profile.email;
-      user.lastLoginAt = new Date();
+      // Returning user — update live fields but NOT the hashed password
+      // (password field change triggers bcrypt re-hash via pre-save hook,
+      //  so we use updateOne to set the plain fields without touching password)
+      user.clientId       = clientId;
+      user.boid           = profile.demat;
+      user.name           = profile.name;
+      user.email          = profile.email;
+      user.lastLoginAt    = new Date();
+      // Update the live MeroShare token immediately so refresh-sync can use it
+      user.meroshareToken = client.token;
       await user.save();
     } else {
-      // Brand-new user
-      isFirstLogin = true;
+      // Brand-new user — password will be hashed by pre-save hook
       user = await User.create({
         clientId,
         username,
         password,
-        boid:        profile.demat,
-        name:        profile.name,
-        email:       profile.email,
-        lastLoginAt: new Date(),
+        boid:           profile.demat,
+        name:           profile.name,
+        email:          profile.email,
+        lastLoginAt:    new Date(),
+        meroshareToken: client.token,
+        lastSyncDate:   null,   // will be set after first sync
       });
     }
 
-    userId   = user._id;
-    userName = user.name;
+    const userId   = user._id;
+    const userName = user.name;
 
     await ensureUserCollections(userName);
     logger.info(`📁 DB collections ready for: ${userName}`);
 
-    const token = generateToken(userId);
-    logger.info(`✅ User logged in: ${username} (${profile.name})`);
+    // ── Step 3: Date-only comparison ─────────────────────────────────
+    const today        = todayDateString();          // "YYYY-MM-DD"
+    const lastSync     = user.lastSyncDate || null;  // "YYYY-MM-DD" or null
+    const needFullSync = isNewUser || (lastSync !== today);
 
-    // ─────────────────────────────────────────────────────────────────
-    // FIRST-TIME LOGIN → block until sync completes so the frontend
-    // receives data from MongoDB on the very first request.
-    // ─────────────────────────────────────────────────────────────────
-    if (isFirstLogin) {
-      logger.info("🔄 First login — running BLOCKING sync...");
+    logger.info(
+      needFullSync
+        ? `📅 Different day (last: ${lastSync ?? "never"}, today: ${today}) → running FULL SYNC`
+        : `📅 Same day (${today}) → skipping full sync, loading from DB`
+    );
+
+    const token = generateToken(userId);
+
+    if (needFullSync) {
+      // ── DIFFERENT-DAY LOGIN: block until full sync completes ───────
+      logger.info("🔄 Full sync starting (BLOCKING — JWT withheld until complete)...");
       try {
-        await runFullSync({ client, clientId, username, password, userId, name: userName });
-        logger.info("✅ First-login sync complete.");
+        await runFullSync({
+          client,     // already authenticated — no re-login needed
+          clientId,
+          username,
+          password,
+          userId,
+          name: userName,
+        });
+        logger.info("✅ Full sync complete. Returning JWT.");
       } catch (syncErr) {
-        // Sync failed — log it but still let the user in (data will be empty)
-        logger.error("❌ First-login sync failed:", syncErr);
+        // Sync failed — log but still let the user in; data may be stale
+        logger.error("❌ Full sync failed:", syncErr);
       }
+    } else {
+      // ── SAME-DAY LOGIN: just refresh the stored token, skip sync ──
+      logger.info("⚡ Same-day login — storing fresh token, skipping sync.");
+      await User.findByIdAndUpdate(userId, { meroshareToken: client.token });
     }
 
-    // Always respond AFTER any blocking work is done
-    ok(res, {
+    // ── Step 4: Return JWT ────────────────────────────────────────────
+    return ok(res, {
       token,
-      firstLogin: isFirstLogin,
+      syncedToday: !needFullSync,  // true = same-day skip, false = full sync ran
       user: {
         id:       user._id,
         name:     user.name,
@@ -145,22 +177,12 @@ exports.login = async (req, res) => {
     logger.error(e);
     return err(res, "Login failed. Please try again.", 500);
   }
-
-  // ─────────────────────────────────────────────────────────────────
-  // RETURNING LOGIN → background sync (non-blocking, after response)
-  // ─────────────────────────────────────────────────────────────────
-  if (!isFirstLogin) {
-    logger.info("🔄 Background sync started after returning login...");
-    runFullSync({ client, clientId, username, password, userId, name: userName })
-      .then(() => logger.info("✅ Background sync complete."))
-      .catch((e) => logger.error("❌ Background sync failed:", e));
-  }
 };
 
 // GET /api/auth/me
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("-password").lean();
+    const user = await User.findById(req.user.id).select("-password -meroshareToken").lean();
     if (!user) return err(res, "User not found.", 404);
     ok(res, user);
   } catch (e) {

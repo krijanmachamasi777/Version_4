@@ -1,9 +1,10 @@
-const router    = require("express").Router();
-const ctrl      = require("../controllers/index");
-const authCtrl  = require("../controllers/authController");
+// src/routes/index.js
+const router           = require("express").Router();
+const ctrl             = require("../controllers/index");
+const authCtrl         = require("../controllers/authController");
 const notificationCtrl = require("../controllers/notificationController");
-const journalCtrl = require("../controllers/journalController"); 
-const protect   = require("../middleware/auth");
+const journalCtrl      = require("../controllers/journalController");
+const protect          = require("../middleware/auth");
 
 router.get("/health", (req, res) =>
   res.json({ status: "ok", timestamp: new Date().toISOString() })
@@ -29,5 +30,11 @@ router.post("/investment-trades", journalCtrl.createInvestmentTrade);
 router.put("/investment-trades/:id", journalCtrl.updateInvestmentTrade);
 router.delete("/investment-trades/:id", journalCtrl.deleteInvestmentTrade);
 router.get("/sync/logs",      ctrl.getSyncLogs);
+
+// ── Portfolio refresh (called on browser refresh) ──────────────────
+// Fetches live portfolio + LTP data from MeroShare and updates MongoDB.
+// Does NOT perform a full sync. Uses the stored MeroShare token —
+// never the hashed password.
+router.post("/portfolio/refresh", ctrl.refreshPortfolio);
 
 module.exports = router;
