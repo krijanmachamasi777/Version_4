@@ -7,10 +7,9 @@ const userSchema = new mongoose.Schema({
   username:    { type: String, required: true, unique: true, index: true },
   password:    { type: String, required: true },
 
-  // ── Sync-control fields ─────────────────────────────────────────────
-  lastSyncDate:   { type: String, default: null },   // "YYYY-MM-DD"
-  meroshareToken: { type: String, default: null },   // live MeroShare JWT
-  // ───────────────────────────────────────────────────────────────────
+  // Live MeroShare JWT — stored after login, used by portfolio refresh sync.
+  // NEVER the hashed password. Cleared on logout.
+  meroshareToken: { type: String, default: null },
 
   boid:        { type: String },
   name:        { type: String },

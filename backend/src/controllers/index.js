@@ -1,10 +1,13 @@
 // src/controllers/index.js
 //
-// CHANGES FROM ORIGINAL:
-//   • Added refreshPortfolio() — calls runPortfolioSync() which fetches
-//     ONLY portfolioitems + portfoliosummaries (LTP / current values).
-//     Uses the stored MeroShare session token; never the hashed password.
-//     Returns the fresh portfolio from MongoDB after the sync completes.
+// Database-first: all endpoints read from MongoDB only.
+// External MeroShare API is never called directly from these endpoints —
+// data must already be in the DB via sync (runFullSync or runPortfolioSync).
+//
+// refreshPortfolio():
+//   Attempts live LTP update via stored MeroShare token.
+//   If token expired → returns 401 { sessionExpired: true }.
+//   Frontend must clear session and redirect to login on 401+sessionExpired.
 //
 const { getModel }         = require("../utils/userCollections");
 const { runPortfolioSync } = require("../services/syncService");
@@ -76,21 +79,19 @@ exports.getPortfolio = async (req, res) => {
   }
 };
 
-// ── Portfolio Refresh (browser refresh — LTP/current value update) ────
+// ── Portfolio Refresh (browser refresh — LTP update) ─────────────────
 //
 // Flow:
 //   Browser Refresh
-//     ↓ POST /api/portfolio/refresh
-//     ↓ runPortfolioSync() → calls MeroShare portfolio APIs
-//     ↓ Updates MongoDB (portfolioitems + portfoliosummaries)
-//     ↓ Returns fresh data from MongoDB
-//     ↓ Frontend displays updated portfolio
+//     → POST /api/portfolio/refresh
+//     → runPortfolioSync() uses stored meroshareToken
+//     → Updates MongoDB (portfolioitems + portfoliosummaries)
+//     → Returns fresh data from MongoDB
 //
-// Rules:
-//   • Only portfolioitems and portfoliosummaries are updated.
-//   • Profile, Shares, WACC, Applicable Issues are NOT re-fetched.
-//   • Uses stored meroshareToken — NEVER the bcrypt-hashed password.
-//   • If the MeroShare session is expired, returns 401 with a clear message.
+// Session expiry behavior:
+//   If MeroShare token is expired/missing:
+//     → Returns HTTP 401 { success: false, sessionExpired: true, message: "..." }
+//     → Frontend MUST clear session and redirect to login page immediately.
 //
 exports.refreshPortfolio = async (req, res) => {
   try {
@@ -99,26 +100,25 @@ exports.refreshPortfolio = async (req, res) => {
 
     logger.info(`🔄 Portfolio refresh requested by: ${userName}`);
 
-    // Attempt live LTP refresh from MeroShare.
-    // If the stored session token is expired (common after ~15-30 min), we
-    // silently fall back to serving the cached portfolio from MongoDB instead
-    // of returning a 401. The user's data is already in DB from the last sync.
-    // LTP values will be updated on the next daily full-sync login.
-    let liveRefreshSucceeded = false;
     try {
       await runPortfolioSync({ userId, name: userName });
-      liveRefreshSucceeded = true;
+      logger.info(`✅ Portfolio live refresh complete for: ${userName}`);
     } catch (syncErr) {
-      if (syncErr.message.includes("session expired") || syncErr.message.includes("expired")) {
-        // Expected: MeroShare tokens expire quickly. Serve from DB, no error.
-        logger.info(`ℹ️  MeroShare token expired for ${userName} — serving cached portfolio from DB.`);
-      } else {
-        // Unexpected sync error — log it but still serve cached data
-        logger.warn(`⚠️  Portfolio live refresh failed for ${userName}: ${syncErr.message}`);
+      if (syncErr.sessionExpired) {
+        // MeroShare token is expired — user must re-login to get a fresh one.
+        // Return 401 with sessionExpired flag so the frontend can handle it.
+        logger.warn(`⚠️  MeroShare session expired for ${userName} — forcing re-login.`);
+        return res.status(401).json({
+          success:        false,
+          sessionExpired: true,
+          message:        "MeroShare session expired. Please login again.",
+        });
       }
+      // Unexpected sync error — serve cached data from DB
+      logger.warn(`⚠️  Portfolio live refresh failed for ${userName}: ${syncErr.message}`);
     }
 
-    // Always return the portfolio from MongoDB (either freshly updated or cached)
+    // Return portfolio from MongoDB (freshly updated or cached)
     const PortfolioSummary = getModel(userName, "portfoliosummaries");
     const PortfolioItem    = getModel(userName, "portfolioitems");
     const [summary, items] = await Promise.all([
@@ -126,8 +126,8 @@ exports.refreshPortfolio = async (req, res) => {
       PortfolioItem.find().sort({ script: 1 }).select("-__v -createdAt -updatedAt").lean(),
     ]);
 
-    logger.info(`✅ Portfolio loaded for: ${userName} (${items.length} items, live=${liveRefreshSucceeded})`);
-    ok(res, { summary, items }, { total: items.length, refreshed: liveRefreshSucceeded });
+    logger.info(`📦 Portfolio served for: ${userName} (${items.length} items)`);
+    ok(res, { summary, items }, { total: items.length });
 
   } catch (e) {
     logger.error(e);
@@ -187,6 +187,7 @@ exports.getSyncLogs = async (req, res) => {
 };
 
 // ── Manual Sync Trigger ───────────────────────────────────────────────
+// NOTE: Kept for admin/debug use. Uses stored meroshareToken — never hashed password.
 exports.triggerSync = async (req, res) => {
   try {
     logger.info("Manual sync triggered via API.");
@@ -202,7 +203,7 @@ exports.triggerSync = async (req, res) => {
         name:           lastUser.name,
         meroshareToken: lastUser.meroshareToken || null,
         userId:         lastUser._id,
-        password:       process.env.MEROSHARE_PASSWORD,
+        // NOTE: password intentionally omitted — must use stored token only
       });
     } else {
       logger.warn("Manual sync: no user found in DB.");

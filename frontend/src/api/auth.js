@@ -1,16 +1,9 @@
 // src/api/auth.js
-// ─────────────────────────────────────────────────────────────
-// Auth-related API calls.
-//   POST /api/auth/login  → { token, user }
-//   GET  /api/auth/me     → user object
-// ─────────────────────────────────────────────────────────────
-
 import { apiFetch } from "./client";
 
 /**
  * Authenticate against MeroShare via our backend.
- * @param {{ dpCode: string, username: string, password: string }} creds
- * @returns {{ token: string, user: object }}
+ * Backend always runs a full sync before returning the JWT.
  */
 export function loginApi(creds) {
   return apiFetch("/auth/login", null, {
@@ -21,9 +14,15 @@ export function loginApi(creds) {
 
 /**
  * Fetch the authenticated user's own record.
- * @param {string} token
- * @returns {object} user
  */
 export function getMeApi(token) {
   return apiFetch("/auth/me", token);
+}
+
+/**
+ * Clear the stored MeroShare token on the backend.
+ * Called on explicit user logout.
+ */
+export function logoutApi(token) {
+  return apiFetch("/auth/logout", token, { method: "POST" });
 }

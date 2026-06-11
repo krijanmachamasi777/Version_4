@@ -1,16 +1,4 @@
 // src/App.jsx
-//
-// CHANGES FROM ORIGINAL:
-//   • Reads `syncLoading` from AuthContext and shows a full-screen spinner
-//     on first login while the backend sync + DB fetch completes.
-//   • `trades` and `investments` start as [] and are populated ONLY from
-//     the DB (via fetchJournalTrades / fetchInvestmentTrades).
-//     No localStorage merging for trades or investments.
-//   • Watchlist still uses localStorage (it's user-preference data, not
-//     portfolio data).
-//   • addTrade / addInv now set state from the DB response (not local uid()).
-//   • Removed import of INIT_TRADES and INIT_INV (they're already []).
-//
 import { useState, useMemo, useEffect } from "react";
 import "./styles/global.css";
 import { INIT_WATCH } from "./data/initialData";
@@ -70,7 +58,6 @@ export default function App() {
   // ── Load trades & investments from DB whenever user logs in ──────────
   useEffect(() => {
     if (!isLoggedIn) {
-      // Reset on logout
       setTrades([]);
       setInvestments([]);
       setDataLoaded(false);
@@ -99,29 +86,22 @@ export default function App() {
     try {
       const saved = await createTrade(d);
       setTrades(p => [...p, saved]);
-    } catch (e) {
-      console.warn("Failed to save journal trade", e);
-    }
+    } catch (e) { console.warn("Failed to save journal trade", e); }
   };
 
   const updTrade = async (id, d) => {
     try {
       const updated = await updateJournal(id, d);
       setTrades(p => p.map(t => (t.id === id ? { ...t, ...updated } : t)));
-    } catch (e) {
-      console.warn("Failed to update journal trade", e);
-    }
+    } catch (e) { console.warn("Failed to update journal trade", e); }
   };
 
   const delTrade = async (id) => {
     const item = trades.find(t => t.id === id);
     try {
-      // Only delete manual entries from DB; imported ones are derived from WACC
       if (!item?.imported) await deleteJournal(id);
       setTrades(p => p.filter(t => t.id !== id));
-    } catch (e) {
-      console.warn("Failed to delete journal trade", e);
-    }
+    } catch (e) { console.warn("Failed to delete journal trade", e); }
   };
 
   // ── CRUD — Investments ────────────────────────────────────────────────
@@ -129,18 +109,14 @@ export default function App() {
     try {
       const saved = await createInvestment(d);
       setInvestments(p => [...p, saved]);
-    } catch (e) {
-      console.warn("Failed to save investment", e);
-    }
+    } catch (e) { console.warn("Failed to save investment", e); }
   };
 
   const updInv = async (id, d) => {
     try {
       const updated = await updateInvDB(id, d);
       setInvestments(p => p.map(i => (i.id === id ? { ...i, ...updated } : i)));
-    } catch (e) {
-      console.warn("Failed to update investment", e);
-    }
+    } catch (e) { console.warn("Failed to update investment", e); }
   };
 
   const delInv = async (id) => {
@@ -148,9 +124,7 @@ export default function App() {
     try {
       if (!item?.imported) await deleteInvDB(id);
       setInvestments(p => p.filter(i => i.id !== id));
-    } catch (e) {
-      console.warn("Failed to delete investment", e);
-    }
+    } catch (e) { console.warn("Failed to delete investment", e); }
   };
 
   // ── Watchlist (localStorage only) ────────────────────────────────────
@@ -171,7 +145,7 @@ export default function App() {
   // ── Not logged in ──────────────────────────────────────────────────────
   if (!isLoggedIn) return <LoginPage />;
 
-  // ── First-login full-screen sync spinner ──────────────────────────────
+  // ── Full sync spinner (shown during login while sync + DB load completes) ──
   if (syncLoading) {
     return (
       <div style={{
@@ -180,10 +154,10 @@ export default function App() {
         background: "var(--bg, #0f1117)", color: "var(--text, #e2e8f0)",
       }}>
         <div style={{ fontSize: 40 }}>📊</div>
-        <h2 style={{ margin: 0, fontSize: 22 }}>Setting up your portfolio…</h2>
+        <h2 style={{ margin: 0, fontSize: 22 }}>Syncing your portfolio…</h2>
         <p style={{ margin: 0, opacity: 0.6, textAlign: "center", maxWidth: 340 }}>
-          Fetching your MeroShare data for the first time and saving it to the database.
-          This only happens once.
+          Fetching fresh data from MeroShare and saving it to the database.
+          This runs on every login to keep your data up to date.
         </p>
         <div className="spinner" style={{
           width: 36, height: 36, border: "4px solid rgba(255,255,255,0.15)",

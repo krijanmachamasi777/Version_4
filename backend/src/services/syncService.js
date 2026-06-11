@@ -1,14 +1,14 @@
 // src/services/syncService.js
 //
-// CHANGES FROM ORIGINAL:
-//   • runFullSync() now accepts { meroshareToken } and reuses the stored
-//     MeroShare session token instead of doing a fresh login when possible.
-//   • Added runPortfolioSync() — lightweight refresh sync that only updates
-//     portfolioitems + portfoliosummaries (for LTP / current value refresh).
-//   • runPortfolioSync() validates the stored session first; if expired it
-//     throws "MeroShare session expired. Please login again." instead of
-//     attempting to use the bcrypt-hashed password.
-//   • Both functions use a shared _buildClient() helper.
+// BEHAVIOR:
+//   runFullSync()     — Full sync every login. Fetches all MeroShare data
+//                       and upserts into MongoDB. Never skips based on date.
+//   runPortfolioSync() — Lightweight refresh using stored MeroShare token.
+//                        Called on browser refresh. Only updates portfolio.
+//                        If token expired → throws "sessionExpired" error.
+//
+// IMPORTANT: Hashed passwords are NEVER used for MeroShare re-authentication.
+//            Only the stored meroshareToken (captured at login) is reused.
 //
 
 const { getModel }  = require("../utils/userCollections");
@@ -36,14 +36,18 @@ async function bulkUpsert(Model, filterKeys, docs) {
 
 // ── Build / restore a MeroShareClient ────────────────────────────────
 //
-// If credentials include a live `meroshareToken` (and optionally `boid` /
-// `clientCode`), we skip the network login and restore the session in-memory.
-// Falls back to a fresh login if the token is absent.
+// Priority:
+//   1. credentials.client — already-authenticated client (from login flow)
+//   2. credentials.meroshareToken — restore session from stored token
+//   3. Fresh login (should only happen in rare fallback cases)
+//
+// CRITICAL: hashed passwords must never be sent to MeroShare.
+// Only plain passwords (during initial login) or stored tokens are used.
 //
 async function _buildClient(credentials) {
   const MeroShareClient = require("./meroshareClient");
 
-  // Caller passed an already-authenticated client object — use it directly
+  // Already-authenticated client — use it directly
   if (credentials?.client) {
     return credentials.client;
   }
@@ -51,20 +55,21 @@ async function _buildClient(credentials) {
   const client = new MeroShareClient({
     clientId: credentials.clientId,
     username: credentials.username,
-    password: credentials.password,   // only used when token is absent
+    password: credentials.password,  // only used when token is absent
   });
 
   if (credentials.meroshareToken) {
     // Restore session from stored token — no password needed
     client.token = credentials.meroshareToken;
-    // Fetch own details to re-hydrate boid / clientCode
     try {
       await client.getOwnDetails();
       logger.info("🔑 MeroShare session restored from stored token.");
     } catch (err) {
-      // Token expired
+      // Token expired or invalid
       logger.warn("⚠️  Stored MeroShare token is expired or invalid.");
-      throw new Error("MeroShare session expired. Please login again.");
+      const sessionErr = new Error("MeroShare session expired. Please login again.");
+      sessionErr.sessionExpired = true;
+      throw sessionErr;
     }
   } else {
     // Fresh login
@@ -202,26 +207,18 @@ async function syncWacc(client, username, scripts = []) {
   return count;
 }
 
-// ── Date-only helper ──────────────────────────────────────────────────
-// Returns "YYYY-MM-DD" for the current local date (ignores time).
-function todayDateString() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm   = String(d.getMonth() + 1).padStart(2, "0");
-  const dd   = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 // ── Full sync orchestrator ────────────────────────────────────────────
 //
+// Runs on EVERY login — no date checks, no skipping.
+//
 // credentials: {
-//   client?:        MeroShareClient   (already authenticated)
+//   client?:        MeroShareClient   (already authenticated from login)
 //   clientId?:      number
 //   username?:      string
 //   name?:          string            (display name / folder key)
 //   password?:      string            (plain — only used for initial login)
 //   meroshareToken?: string           (stored token — avoids fresh login)
-//   userId?:        ObjectId          (to update User.lastSyncDate)
+//   userId?:        ObjectId          (to update User.meroshareToken after sync)
 // }
 //
 async function runFullSync(credentials = null) {
@@ -236,12 +233,11 @@ async function runFullSync(credentials = null) {
   let username;
 
   if (credentials?.client) {
-    // Already-logged-in client passed in from the login handler
     client   = credentials.client;
     username = credentials.name || credentials.username;
   } else {
     if (!credentials) {
-      // Cron job — no credentials, load last user from DB
+      // Fallback: no credentials — load last user from DB (cron use case)
       const User     = require("../models/User");
       const lastUser = await User.findOne().sort({ lastLoginAt: -1 }).lean();
       if (!lastUser) {
@@ -305,17 +301,16 @@ async function runFullSync(credentials = null) {
   const hasErrors  = steps.some((s) => s.status === "error");
   const allFailed  = steps.every((s) => s.status === "error");
 
-  // ── Save lastSyncDate + live token on the User document ──────────
+  // Persist the refreshed MeroShare token for subsequent portfolio refreshes
   if (credentials?.userId) {
     try {
       const User = require("../models/User");
       await User.findByIdAndUpdate(credentials.userId, {
-        lastSyncDate:   todayDateString(),
         meroshareToken: client.token || null,
       });
-      logger.info(`  ✔ lastSyncDate saved: ${todayDateString()}`);
+      logger.info("  ✔ MeroShare token saved to User.");
     } catch (e) {
-      logger.warn("⚠️  Could not update lastSyncDate on User:", e.message);
+      logger.warn("⚠️  Could not update meroshareToken on User:", e.message);
     }
   }
 
@@ -339,32 +334,29 @@ async function runFullSync(credentials = null) {
 
 // ── Portfolio-only refresh sync ───────────────────────────────────────
 //
-// Called on every browser refresh.  Fetches ONLY portfolioitems and
-// portfoliosummaries (LTP / current values).  Never re-fetches profile,
-// shares, WACC, or applicable issues.
+// Called on browser refresh (not login). Updates ONLY portfolioitems and
+// portfoliosummaries (LTP / current values). Uses stored meroshareToken.
+// NEVER uses hashed passwords.
 //
-// IMPORTANT: Uses the stored MeroShare token (meroshareToken) — NEVER
-// the bcrypt-hashed password.
-//
-// credentials: {
-//   userId:         ObjectId   (required — to load meroshareToken from DB)
-//   name:           string     (display name / folder key)
-// }
+// If token expired → throws error with sessionExpired = true.
+//   → Backend returns 401 { sessionExpired: true }
+//   → Frontend clears session + redirects to login.
 //
 async function runPortfolioSync(credentials) {
   const { userId, name: username } = credentials;
 
-  if (!userId) throw new Error("runPortfolioSync: userId is required.");
+  if (!userId)   throw new Error("runPortfolioSync: userId is required.");
   if (!username) throw new Error("runPortfolioSync: name (username) is required.");
 
   logger.info(`🔄 Portfolio refresh sync for: ${username}`);
 
-  // Load the stored MeroShare token from the User document
-  const User = require("../models/User");
+  const User    = require("../models/User");
   const userDoc = await User.findById(userId).select("meroshareToken clientId").lean();
 
   if (!userDoc?.meroshareToken) {
-    throw new Error("MeroShare session expired. Please login again.");
+    const e = new Error("MeroShare session expired. Please login again.");
+    e.sessionExpired = true;
+    throw e;
   }
 
   let client;
@@ -374,11 +366,11 @@ async function runPortfolioSync(credentials) {
       meroshareToken: userDoc.meroshareToken,
     });
   } catch (err) {
-    // Token expired — surface the message to the frontend
-    throw new Error("MeroShare session expired. Please login again.");
+    const e = new Error("MeroShare session expired. Please login again.");
+    e.sessionExpired = true;
+    throw e;
   }
 
-  // Sync ONLY portfolio
   const startedAt = new Date();
   let count;
   try {
@@ -389,7 +381,9 @@ async function runPortfolioSync(credentials) {
   }
 
   // Persist refreshed token in case MeroShare rotated it
-  await User.findByIdAndUpdate(userId, { meroshareToken: client.token || userDoc.meroshareToken });
+  await User.findByIdAndUpdate(userId, {
+    meroshareToken: client.token || userDoc.meroshareToken,
+  });
 
   const durationMs = Date.now() - startedAt;
   logger.info(`  ✔ Portfolio refresh complete in ${durationMs}ms (${count} records).`);
@@ -397,4 +391,4 @@ async function runPortfolioSync(credentials) {
   return { count, durationMs };
 }
 
-module.exports = { runFullSync, runPortfolioSync, todayDateString };
+module.exports = { runFullSync, runPortfolioSync };

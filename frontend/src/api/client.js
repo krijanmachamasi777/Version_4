@@ -1,9 +1,12 @@
 // src/api/client.js
 // ─────────────────────────────────────────────────────────────
 // Central HTTP utility.
-// • Sends Authorization: Bearer <token>  (matches backend middleware/auth.js)
-// • Unwraps { success, data } envelope returned by all backend routes
-// • Throws on HTTP or logical errors so callers only see clean data
+//
+// Session expiry handling:
+//   If ANY response returns HTTP 401 with { sessionExpired: true },
+//   we dispatch a custom DOM event "meroshare:sessionExpired".
+//   AuthContext listens for this event and calls logout() + redirects to login.
+//   This ensures every API call in the app gets automatic session expiry handling.
 // ─────────────────────────────────────────────────────────────
 
 const BASE = "/api";
@@ -21,8 +24,17 @@ export async function apiFetch(path, token = null, opts = {}) {
     ...(opts.headers || {}),
   };
 
-  const res = await fetch(`${BASE}${path}`, { ...opts, headers });
+  const res  = await fetch(`${BASE}${path}`, { ...opts, headers });
   const json = await res.json();
+
+  // ── Session expiry — clear session and redirect to login ─────────
+  if (res.status === 401 && json.sessionExpired) {
+    const error = new Error(json.message || "MeroShare session expired. Please login again.");
+    error.sessionExpired = true;
+    // Notify AuthContext via a DOM event so any component can trigger logout
+    window.dispatchEvent(new CustomEvent("meroshare:sessionExpired"));
+    throw error;
+  }
 
   if (!res.ok || json.success === false) {
     throw new Error(json.message || `API error ${res.status}`);
