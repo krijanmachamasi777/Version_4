@@ -17,7 +17,19 @@
 // │     so the UI can prompt re-login.                                 │
 // └────────────────────────────────────────────────────────────────────┘
 //
-import { createContext, useContext, useState, useCallback } from "react";
+// FIX (duplicate API calls):
+//   hydrateUser previously had `user` in its useCallback deps. When it called
+//   setUser(me) mid-run, `user` changed, giving hydrateUser a new reference,
+//   which caused App.jsx's useEffect([hydrateUser]) to re-fire and run the
+//   entire hydration a second time (double /auth/me, double /portfolio/refresh,
+//   double /shares, /wacc, /issues, /journal-trades, /investment-trades).
+//
+//   Fix: use a `useRef` flag (hydratedRef) that is set to true on the first
+//   call. hydrateUser bails out immediately if already run. The dep array now
+//   omits `user` (accessed via ref) so the useCallback reference is stable
+//   across the user state change.
+//
+import { createContext, useContext, useState, useCallback, useRef } from "react";
 import { loginApi, getMeApi } from "../api/auth";
 import {
   getProfile, getPortfolio, getShares, getIssues, getWacc,
@@ -33,15 +45,21 @@ const TOKEN_KEY   = "kitakat_token";
 export function AuthProvider({ children }) {
   const [token, setToken]                   = useState(() => sessionStorage.getItem(TOKEN_KEY) || null);
   const [user,  setUser]                    = useState(null);
-  const [loading,        setLoading]        = useState(false);   // login form spinner
-  const [syncLoading,    setSyncLoading]    = useState(false);   // full-screen sync spinner
-  const [refreshLoading, setRefreshLoading] = useState(false);   // portfolio refresh spinner
+  const [loading,        setLoading]        = useState(false);
+  const [syncLoading,    setSyncLoading]    = useState(false);
+  const [refreshLoading, setRefreshLoading] = useState(false);
   const [error,          setError]          = useState(null);
-  const [sessionExpired, setSessionExpired] = useState(false);   // MeroShare token expired
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  // Guard: prevents hydrateUser from running more than once per session.
+  // Without this, setting `user` state inside hydrateUser caused the
+  // useCallback to get a new reference (user changed), which re-triggered
+  // App.jsx's useEffect([hydrateUser]) and doubled every API call.
+  const hydratedRef = useRef(false);
 
   // Cached portfolio-level data (shared across all tabs)
   const [portfolioData, setPortfolioData] = useState({
-    portfolio:  null,   // { summary, items }
+    portfolio:  null,
     shares:     [],
     wacc:       [],
     issues:     [],
@@ -49,8 +67,6 @@ export function AuthProvider({ children }) {
   });
 
   // ── Load all data from MongoDB ───────────────────────────────────────
-  // portfolioOverride: pass in a fresh portfolio object to skip the
-  // GET /portfolio call (used after a successful refresh sync).
   const loadStaticData = useCallback(async (tok, portfolioOverride = null) => {
     const t = tok || token;
     if (!t) return;
@@ -74,16 +90,15 @@ export function AuthProvider({ children }) {
     }
   }, [token]);
 
-  // Alias kept for backward compatibility
   const fetchAllPortfolioData = loadStaticData;
 
   // ── login ────────────────────────────────────────────────────────────
-  // The backend blocks the JWT until any required sync finishes.
-  // Frontend waits for the JWT, then loads everything from MongoDB.
   const login = useCallback(async ({ dpCode, username, password }) => {
     setLoading(true);
     setError(null);
     setSessionExpired(false);
+    // Reset hydration guard so hydrateUser can run on next page refresh
+    hydratedRef.current = false;
     try {
       const data = await loginApi({ dpCode: String(dpCode), username, password });
       const tok  = data.token;
@@ -92,8 +107,6 @@ export function AuthProvider({ children }) {
       setToken(tok);
       setUser(data.user);
 
-      // syncedToday = true  → same-day skip (JWT returned instantly)
-      // syncedToday = false → full sync just completed server-side
       if (!data.syncedToday) {
         setSyncLoading(true);
       }
@@ -104,6 +117,8 @@ export function AuthProvider({ children }) {
         setSyncLoading(false);
       }
 
+      // Mark as hydrated so a subsequent page refresh still works correctly
+      hydratedRef.current = true;
       return true;
     } catch (e) {
       setError(e.message);
@@ -120,24 +135,31 @@ export function AuthProvider({ children }) {
     setUser(null);
     setError(null);
     setSessionExpired(false);
+    hydratedRef.current = false;
     setPortfolioData({ portfolio: null, shares: [], wacc: [], issues: [], loaded: false });
   }, []);
 
   // ── hydrateUser: called on every page/browser refresh ───────────────
   //
-  // Flow:
-  //   1. Restore user identity from JWT (GET /auth/me).
-  //   2. POST /portfolio/refresh → backend fetches live LTP from MeroShare
-  //      using the stored session token (no password ever sent).
-  //   3. Load shares, wacc, issues + the fresh portfolio from MongoDB.
-  //   4. If MeroShare session expired → set sessionExpired so the UI can
-  //      show a re-login prompt (app still loads cached DB data).
+  // IMPORTANT: This function must only run ONCE per page load.
+  // The hydratedRef guard ensures that even if the useCallback reference
+  // changes (due to token changing), the actual fetch logic never fires twice.
+  //
+  // Dep array intentionally omits `user` — we check hydratedRef instead.
+  // This keeps the useCallback reference stable after setUser() fires, which
+  // prevents App.jsx's useEffect([hydrateUser]) from re-triggering.
   //
   const hydrateUser = useCallback(async () => {
-    if (!token || user) return;
+    // Bail out if already hydrated OR no token in storage
+    const storedToken = sessionStorage.getItem(TOKEN_KEY);
+    if (!storedToken) return;
+    if (hydratedRef.current) return;
+
+    // Mark immediately to prevent any concurrent invocation from also running
+    hydratedRef.current = true;
 
     try {
-      const me = await getMeApi(token);
+      const me = await getMeApi(storedToken);
       setUser(me);
     } catch {
       logout();
@@ -149,11 +171,11 @@ export function AuthProvider({ children }) {
     let freshPortfolio = null;
 
     try {
-      freshPortfolio = await refreshPortfolio(token);
+      freshPortfolio = await refreshPortfolio(storedToken);
       console.log("✅ Portfolio refresh complete (LTP updated).");
     } catch (refreshErr) {
       if (refreshErr.sessionExpired) {
-        console.warn("⚠️  MeroShare session expired — prompting re-login.");
+        console.warn("⚠️  MeroShare session expired — loading from DB cache.");
         setSessionExpired(true);
       } else {
         console.warn("⚠️  Portfolio refresh failed:", refreshErr.message);
@@ -164,8 +186,12 @@ export function AuthProvider({ children }) {
     }
 
     // ── Load all data from MongoDB ────────────────────────────────────
-    loadStaticData(token, freshPortfolio).catch(() => {});
-  }, [token, user, logout, loadStaticData]);
+    loadStaticData(storedToken, freshPortfolio).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logout, loadStaticData]);
+  // NOTE: `token` and `user` are intentionally NOT in this dep array.
+  // `token` is read from sessionStorage directly (always fresh).
+  // `user` would cause a re-run after setUser() fires — exactly the bug we fixed.
 
   // ── Individual data fetchers ──────────────────────────────────────────
   const fetchProfile         = useCallback(()       => getProfile(token),        [token]);
@@ -198,14 +224,11 @@ export function AuthProvider({ children }) {
         sessionExpired,
         error,
         isLoggedIn: !!token,
-        // Portfolio data cached from DB
         portfolioData,
         fetchAllPortfolioData,
-        // Auth
         login,
         logout,
         hydrateUser,
-        // Individual fetchers
         fetchProfile,
         fetchPortfolio,
         fetchSharesList,
@@ -214,12 +237,10 @@ export function AuthProvider({ children }) {
         fetchSyncLogs,
         doSync,
         doRefreshPortfolio,
-        // Journal
         fetchJournalTrades,
         createTrade,
         updateTrade,
         deleteTrade,
-        // Investment
         fetchInvestmentTrades,
         createInvestment,
         updateInvestment,

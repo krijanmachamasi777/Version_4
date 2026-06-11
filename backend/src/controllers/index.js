@@ -99,20 +99,26 @@ exports.refreshPortfolio = async (req, res) => {
 
     logger.info(`🔄 Portfolio refresh requested by: ${userName}`);
 
+    // Attempt live LTP refresh from MeroShare.
+    // If the stored session token is expired (common after ~15-30 min), we
+    // silently fall back to serving the cached portfolio from MongoDB instead
+    // of returning a 401. The user's data is already in DB from the last sync.
+    // LTP values will be updated on the next daily full-sync login.
+    let liveRefreshSucceeded = false;
     try {
       await runPortfolioSync({ userId, name: userName });
+      liveRefreshSucceeded = true;
     } catch (syncErr) {
-      if (syncErr.message.includes("session expired")) {
-        return res.status(401).json({
-          success:        false,
-          message:        syncErr.message,
-          sessionExpired: true,
-        });
+      if (syncErr.message.includes("session expired") || syncErr.message.includes("expired")) {
+        // Expected: MeroShare tokens expire quickly. Serve from DB, no error.
+        logger.info(`ℹ️  MeroShare token expired for ${userName} — serving cached portfolio from DB.`);
+      } else {
+        // Unexpected sync error — log it but still serve cached data
+        logger.warn(`⚠️  Portfolio live refresh failed for ${userName}: ${syncErr.message}`);
       }
-      throw syncErr;
     }
 
-    // Return the freshly updated portfolio from MongoDB
+    // Always return the portfolio from MongoDB (either freshly updated or cached)
     const PortfolioSummary = getModel(userName, "portfoliosummaries");
     const PortfolioItem    = getModel(userName, "portfolioitems");
     const [summary, items] = await Promise.all([
@@ -120,8 +126,8 @@ exports.refreshPortfolio = async (req, res) => {
       PortfolioItem.find().sort({ script: 1 }).select("-__v -createdAt -updatedAt").lean(),
     ]);
 
-    logger.info(`✅ Portfolio refresh complete for: ${userName} (${items.length} items)`);
-    ok(res, { summary, items }, { total: items.length, refreshed: true });
+    logger.info(`✅ Portfolio loaded for: ${userName} (${items.length} items, live=${liveRefreshSucceeded})`);
+    ok(res, { summary, items }, { total: items.length, refreshed: liveRefreshSucceeded });
 
   } catch (e) {
     logger.error(e);
