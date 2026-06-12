@@ -57,7 +57,7 @@ export function JournalTable({ trades, onScripClick }) {
             lastGroupKey = groupKey;
 
             return (
-              <tr key={t.id}>
+              <tr key={t.id} className={isSold ? "tr--sold" : ""}>
                 {/* SN — only on first row of each TSN group */}
                 <td className="td--mono td--muted">{showGroup ? currentSN : ""}</td>
 
@@ -73,6 +73,9 @@ export function JournalTable({ trades, onScripClick }) {
                       </button>
                       {t.imported && (
                         <span className="badge badge--small" title="Imported from MeroShare">🤖 Imported</span>
+                      )}
+                      {isSold && (
+                        <span className="badge badge--sold" title="This trade has been sold">✓ SOLD</span>
                       )}
                     </div>
                   ) : null}

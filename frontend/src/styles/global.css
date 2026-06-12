@@ -278,6 +278,35 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 .badge--gold    { background: rgba(255,204,0,0.15);  color: #ffcc00;   }
 .badge--default { background: rgba(255,255,255,0.08); color: var(--muted); }
 
+/* SOLD badge — amber/orange tint, clear and readable */
+.badge--sold {
+  background: rgba(255, 149, 0, 0.18);
+  color: #ff9500;
+  font-size: 10px;
+  padding: 2px 7px;
+}
+
+/* SOLD row — subtle muted background to visually separate from active holdings */
+.tr--sold {
+  opacity: 0.72;
+  background: rgba(255, 149, 0, 0.04) !important;
+}
+.tr--sold td {
+  color: var(--muted);
+}
+/* Keep profit/loss colors visible inside sold rows */
+.tr--sold td.td--profit {
+  color: var(--g) !important;
+}
+.tr--sold td.td--loss {
+  color: var(--r) !important;
+}
+/* Keep the SOLD badge itself bright even inside a muted row */
+.tr--sold .badge--sold {
+  opacity: 1;
+  color: #ff9500;
+}
+
 /* ── STAT GRID ────────────────────────────────────────── */
 .stat-grid {
   display: grid;
