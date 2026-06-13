@@ -17,7 +17,7 @@ export function JournalTable({ trades, onScripClick }) {
           <tr>
             <th>SN</th>
             <th>TSN</th>
-            <th>SCRIP</th>
+            <th>SCRIPT</th>
             <th>Quantity</th>
             <th>Buy Rate</th>
             <th>Sell Rate</th>

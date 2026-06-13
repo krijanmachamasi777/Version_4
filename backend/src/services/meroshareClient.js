@@ -4,6 +4,7 @@ const {
   AUTH_URL,
   VIEW_URL,
   PURCHASE_URL,
+  EDIS_URL,
   CREDENTIALS,
   DEFAULTS,
 } = require("../config/meroshare");
@@ -192,16 +193,97 @@ class MeroShareClient {
 
   async getWaccForAll(scripts = []) {
     this._requireAuth();
-    const all = [];
-    for (const script of scripts) {
-      try {
-        const records = await this.getWaccForScript(script);
-        all.push(...records);
-      } catch (err) {
-        logger.warn(`⚠️  WACC fetch failed for ${script}: ${err.message}`);
+    try {
+      const res = await axios.post(
+        `${PURCHASE_URL}/search/wacc/`,
+        { demat: this.boid, scrip: "", isFilterByAllScript: true },
+        { headers: this._headers() },
+      );
+      const records = res.data?.waccUpdateResponse || [];
+      logger.info(`Fetched ${records.length} WACC records (all scripts).`);
+      return records;
+    } catch (err) {
+      logger.warn(`⚠️  Bulk WACC fetch failed: ${err.message}. Falling back to per-script.`);
+      const all = [];
+      for (const script of scripts) {
+        try {
+          const records = await this.getWaccForScript(script);
+          all.push(...records);
+        } catch (e) {
+          logger.warn(`⚠️  WACC fetch failed for ${script}: ${e.message}`);
+        }
       }
+      return all;
     }
-    return all;
+  }
+
+  // ── EDIS: Check for active settlements (sold scripts) ───────────────
+  //
+  // Calls POST /api/EDIS/transfer/active/ with the user's BOID (demat).
+  // Returns an array of settlement objects if any scripts were sold,
+  // or an empty array if nothing was sold.
+  //
+  // Each settlement object contains: { settlementDate, settlementDateStr, settlementId }
+  //
+  async getActiveEdis(demat) {
+    this._requireAuth();
+    this._requireBoid();
+
+    const boid = demat || this.boid;
+
+    try {
+      const res = await axios.post(
+        `${EDIS_URL}/transfer/active/`,
+        { demat: boid },
+        { headers: this._headers() },
+      );
+
+      const data = res.data;
+      // MeroShare returns either an array directly or wraps it
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.object)) return data.object;
+      return [];
+    } catch (err) {
+      // 409 = "No EDIS for today" — not an error, just means nothing sold
+      if (err.response?.status === 409) {
+        logger.debug("EDIS: No active settlements for today.");
+        return [];
+      }
+      logger.warn(`⚠️  getActiveEdis failed: ${err.message}`);
+      return [];
+    }
+  }
+
+  // ── EDIS: Get sale details for a specific settlement ────────────────
+  //
+  // Calls GET /api/EDIS/transfer/detail/{settlementId}
+  // Returns an array of sold script detail objects.
+  //
+  // Each detail object contains:
+  //   obligation.scriptCode  → scrip name (e.g. "PURE")
+  //   rate                   → sell rate
+  //   quantity               → qty sold
+  //   obligation.settleDate  → settlement date
+  //   obligation.wacc        → buy rate (used for matching existing records)
+  //   transferQuantity       → actual transferred qty
+  //
+  async getEdisDetail(settlementId) {
+    this._requireAuth();
+
+    try {
+      const res = await axios.get(
+        `${EDIS_URL}/transfer/detail/${settlementId}`,
+        { headers: this._headers() },
+      );
+
+      const data = res.data;
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.object)) return data.object;
+      return [];
+    } catch (err) {
+      logger.warn(`⚠️  getEdisDetail(${settlementId}) failed: ${err.message}`);
+      return [];
+    }
   }
 }
 

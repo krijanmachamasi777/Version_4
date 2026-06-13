@@ -17,7 +17,7 @@ export function Journal({ trades, onScripClick }) {
       <div className="card__header">
         <div>
           <div className="card__title">Trade Journal</div>
-          <div className="card__sub">Click any SCRIP to view · Edit · Delete</div>
+          <div className="card__sub">Click any SCRIPT to view · Edit · Delete</div>
         </div>
         <span className="card__count">{trades.length} trades</span>
       </div>

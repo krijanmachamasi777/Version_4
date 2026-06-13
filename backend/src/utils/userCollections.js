@@ -9,6 +9,7 @@ const { waccSchema }            = require("../schemas/waccSchema");
 const { syncLogSchema }         = require("../schemas/syncLogSchema");
 const { journalEntrySchema }    = require("../schemas/journalEntrySchema");
 const { investmentEntrySchema } = require("../schemas/investmentEntrySchema");
+const { watchlistEntrySchema }  = require("../schemas/watchlistEntrySchema");
 
 const COLLECTION_SCHEMAS = {
   applicableissues:   applicableIssueSchema,
@@ -20,6 +21,7 @@ const COLLECTION_SCHEMAS = {
   synclogs:           syncLogSchema,
   journalentries:     journalEntrySchema,
   investmententries:  investmentEntrySchema,
+  watchlistentries:   watchlistEntrySchema,
 };
 
 const modelCache = {};

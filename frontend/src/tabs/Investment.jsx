@@ -66,7 +66,7 @@ export function Investment({ investments, onScripClick }) {
       <div className="card__header">
         <div>
           <div className="card__title">Investment Portfolio</div>
-          <div className="card__sub">Click any SCRIP to view all entries · Edit · Delete</div>
+          <div className="card__sub">Click any SCRIPT to view all entries · Edit · Delete</div>
         </div>
         <div className="inv-badges">
           <span className="status-badge sb--holding">⬤ {holdingCount} Holding</span>
@@ -79,7 +79,7 @@ export function Investment({ investments, onScripClick }) {
           <thead>
             <tr>
               <th>SN</th>
-              <th>SCRIP</th>
+              <th>SCRIPT</th>
               <th>Sector</th>
               <th>Quantity</th>
               <th>Buy Rate</th>

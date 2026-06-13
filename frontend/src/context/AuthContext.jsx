@@ -31,6 +31,7 @@ import {
   getSyncLogs,
   getJournalTrades, createJournalTrade, updateJournalTrade, deleteJournalTrade,
   getInvestmentTrades, createInvestmentTrade, updateInvestmentTrade, deleteInvestmentTrade,
+  getWatchlistItems, createWatchlistItem, updateWatchlistItem, deleteWatchlistItem,
 } from "../api/meroshare";
 
 const AuthContext = createContext(null);
@@ -211,6 +212,11 @@ export function AuthProvider({ children }) {
   const updateInvestment      = useCallback((id, p)    => updateInvestmentTrade(token, id, p), [token]);
   const deleteInvestment      = useCallback((id)       => deleteInvestmentTrade(token, id),    [token]);
 
+  const fetchWatchlistItems   = useCallback(()         => getWatchlistItems(token),            [token]);
+  const createWatchItem       = useCallback((p)        => createWatchlistItem(token, p),       [token]);
+  const updateWatchItem       = useCallback((id, p)    => updateWatchlistItem(token, id, p),   [token]);
+  const deleteWatchItem       = useCallback((id)       => deleteWatchlistItem(token, id),      [token]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -240,6 +246,10 @@ export function AuthProvider({ children }) {
         createInvestment,
         updateInvestment,
         deleteInvestment,
+        fetchWatchlistItems,
+        createWatchItem,
+        updateWatchItem,
+        deleteWatchItem,
       }}
     >
       {children}

@@ -207,6 +207,204 @@ async function syncWacc(client, username, scripts = []) {
   return count;
 }
 
+// ── Sale detection sync ───────────────────────────────────────────────
+//
+// Called inside runFullSync on every login.
+//
+// FLOW:
+//   1. Call getActiveEdis(boid) → list of settlements with soldToday
+//   2. For each settlement → call getEdisDetail(settlementId) → sold items
+//   3. For each sold item → extract scrip, sellRate, qty, soldDate, wacc(buyRate)
+//   4. Search journalentries + investmententries for a matching record:
+//      match criteria: scrip === scriptCode AND |buyRate - wacc| <= 0.5
+//   5. If a matching ACTIVE (unsold) record found:
+//      FULL SALE   (soldQty >= heldQty): fill sellRate + soldDate + soldAmt on existing
+//      PARTIAL SALE (soldQty < heldQty):
+//        a. Reduce qty on the existing (active) record
+//        b. Look for an existing SOLD row for same scrip+buyRate:
+//           - Found → accumulate qty + average the sell rate
+//           - Not found → create a new SOLD row
+//
+// TOLERANCE: ±0.50 Rs on buyRate vs EDIS wacc
+//
+const SALE_MATCH_TOLERANCE = 0.5;
+
+async function syncSales(client, username) {
+  const JournalEntry    = getModel(username, "journalentries");
+  const InvestmentEntry = getModel(username, "investmententries");
+
+  const boid = client.boid;
+  if (!boid) {
+    logger.warn("syncSales: no BOID available, skipping.");
+    return 0;
+  }
+
+  // Step 1 — Get active settlements
+  const settlements = await client.getActiveEdis(boid);
+  if (!settlements.length) {
+    logger.info("  ✔ Sales sync: no active EDIS settlements today.");
+    return 0;
+  }
+
+  logger.info(`  → Sales sync: found ${settlements.length} settlement(s).`);
+
+  let totalUpdated = 0;
+
+  for (const settlement of settlements) {
+    const { settlementId } = settlement;
+    if (!settlementId) continue;
+
+    // Step 2 — Get detail for each settlement
+    const details = await client.getEdisDetail(settlementId);
+    if (!details.length) continue;
+
+    for (const detail of details) {
+      const obligation    = detail.obligation || {};
+      const scrip         = (obligation.scriptCode || "").trim().toUpperCase();
+      const soldQty       = Number(detail.transferQuantity || detail.quantity || 0);
+      const sellRate      = Number(detail.rate || 0);
+      const edisWacc      = Number(obligation.wacc || 0);   // buy rate for matching
+      const rawSoldDate   = obligation.settleDate || obligation.tradeDate || "";
+      const soldDate      = rawSoldDate
+        ? new Date(rawSoldDate).toISOString().slice(0, 10)
+        : new Date().toISOString().slice(0, 10);
+
+      if (!scrip || !soldQty || !sellRate) {
+        logger.warn(`  ⚠️  Skipping incomplete EDIS detail: ${JSON.stringify(detail)}`);
+        continue;
+      }
+
+      logger.info(`  → Processing sale: ${soldQty} × ${scrip} @ ${sellRate} (WACC=${edisWacc})`);
+
+      // Step 3 — Search both collections for a matching ACTIVE record
+      // (active = soldDate is empty/null AND sellRate is 0)
+      const matchFilter = (entry) => {
+        const scripMatch   = (entry.scrip || "").trim().toUpperCase() === scrip;
+        const buyRateMatch = Math.abs(Number(entry.buyRate || 0) - edisWacc) <= SALE_MATCH_TOLERANCE;
+        const isActive     = !entry.soldDate && !Number(entry.sellRate) && !Number(entry.soldRate);
+        return scripMatch && buyRateMatch && isActive;
+      };
+
+      // Load candidates from both collections
+      const [journalCandidates, investCandidates] = await Promise.all([
+        JournalEntry.find({ scrip }).lean(),
+        InvestmentEntry.find({ scrip }).lean(),
+      ]);
+
+      const activeJournal = journalCandidates.filter(matchFilter);
+      const activeInvest  = investCandidates.filter(matchFilter);
+
+      // Prefer whichever collection has a matching active record
+      // (script should be in one or the other, not both)
+      const Model         = activeInvest.length ? InvestmentEntry : JournalEntry;
+      const activeRecords = activeInvest.length ? activeInvest    : activeJournal;
+
+      if (!activeRecords.length) {
+        logger.warn(`  ⚠️  No matching active record found for ${scrip} (buyRate≈${edisWacc}). Skipping.`);
+        continue;
+      }
+
+      // Use the first matching active record
+      const activeRecord = activeRecords[0];
+      const heldQty      = Number(activeRecord.qty || 0);
+
+      // ── FULL SALE ──────────────────────────────────────────────────
+      if (soldQty >= heldQty) {
+        const soldAmt = heldQty * sellRate;
+        await Model.findByIdAndUpdate(activeRecord._id, {
+          sellRate:  sellRate,   // journal uses sellRate
+          soldRate:  sellRate,   // investment uses soldRate
+          soldDate,
+          soldAmt:   soldAmt,
+        });
+        logger.info(`  ✔ Full sale recorded: ${scrip} (${heldQty} units @ ${sellRate})`);
+        totalUpdated++;
+        continue;
+      }
+
+      // ── PARTIAL SALE ───────────────────────────────────────────────
+      // Step A: reduce qty on the active (still-holding) record
+      const remainingQty = heldQty - soldQty;
+      const newBuyAmt    = remainingQty * Number(activeRecord.buyRate || 0);
+
+      await Model.findByIdAndUpdate(activeRecord._id, {
+        qty:    remainingQty,
+        buyAmt: newBuyAmt,
+      });
+
+      // Step B: find existing SOLD row for same scrip + buyRate
+      const soldRowFilter = (entry) => {
+        const scripMatch   = (entry.scrip || "").trim().toUpperCase() === scrip;
+        const buyRateMatch = Math.abs(Number(entry.buyRate || 0) - edisWacc) <= SALE_MATCH_TOLERANCE;
+        const isSold       = !!entry.soldDate || Number(entry.sellRate) > 0 || Number(entry.soldRate) > 0;
+        return scripMatch && buyRateMatch && isSold;
+      };
+
+      const existingSoldJournal = journalCandidates.filter(soldRowFilter);
+      const existingSoldInvest  = investCandidates.filter(soldRowFilter);
+      const existingSold        = activeInvest.length
+        ? existingSoldInvest[0]
+        : existingSoldJournal[0];
+
+      if (existingSold) {
+        // ── Accumulate onto existing SOLD row ──────────────────────
+        // New avg sell rate = ((prevQty × prevSellRate) + (newQty × newSellRate)) / (prevQty + newQty)
+        const prevQty      = Number(existingSold.qty || 0);
+        const prevSellRate = Number(existingSold.sellRate || existingSold.soldRate || 0);
+        const totalQty     = prevQty + soldQty;
+        const avgSellRate  = totalQty
+          ? ((prevQty * prevSellRate) + (soldQty * sellRate)) / totalQty
+          : sellRate;
+        const newSoldAmt   = totalQty * avgSellRate;
+        const newBuyAmtSold = totalQty * Number(existingSold.buyRate || edisWacc);
+
+        await Model.findByIdAndUpdate(existingSold._id, {
+          qty:      totalQty,
+          sellRate: avgSellRate,   // journal
+          soldRate: avgSellRate,   // investment
+          soldAmt:  newSoldAmt,
+          buyAmt:   newBuyAmtSold,
+          soldDate,                // update to latest sale date
+        });
+        logger.info(`  ✔ Partial sale accumulated: ${scrip} sold row now ${totalQty} units @ avg ${avgSellRate.toFixed(2)}`);
+      } else {
+        // ── Create a brand-new SOLD row ────────────────────────────
+        const soldAmt  = soldQty * sellRate;
+        const buyAmt   = soldQty * Number(activeRecord.buyRate || edisWacc);
+
+        const newSoldDoc = {
+          scrip,
+          qty:          soldQty,
+          buyRate:      Number(activeRecord.buyRate || edisWacc),
+          sellRate,             // journal field
+          soldRate:     sellRate, // investment field
+          buyAmt,
+          soldAmt,
+          ltp:          0,
+          valueAsOfLtp: 0,
+          boughtDate:   activeRecord.boughtDate || "",
+          soldDate,
+          remarks:      activeRecord.remarks || "",
+          imported:     activeRecord.imported || false,
+          origin:       activeRecord.origin   || "ms",
+          waccId:       activeRecord.waccId   || "",
+          tsn:          activeRecord.tsn    || "",
+          rr:           activeRecord.rr     || "—",
+          sector:       activeRecord.sector || "",
+        };
+
+        await Model.create(newSoldDoc);
+        logger.info(`  ✔ Partial sale: new SOLD row created for ${scrip} (${soldQty} units @ ${sellRate})`);
+      }
+
+      totalUpdated++;
+    }
+  }
+
+  logger.info(`  ✔ Sales sync complete: ${totalUpdated} record(s) updated.`);
+  return totalUpdated;
+}
+
 // ── Full sync orchestrator ────────────────────────────────────────────
 //
 // Runs on EVERY login — no date checks, no skipping.
@@ -294,7 +492,8 @@ async function runFullSync(credentials = null) {
     scripts = shares.map((s) => s.script).filter(Boolean);
   } catch (_) {}
 
-  await run("wacc", () => syncWacc(client, username, scripts));
+  await run("wacc",  () => syncWacc(client, username, scripts));
+  await run("sales", () => syncSales(client, username));
 
   const finishedAt = new Date();
   const durationMs = finishedAt - startedAt;

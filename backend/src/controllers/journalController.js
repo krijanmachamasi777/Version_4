@@ -1,15 +1,15 @@
 // src/controllers/journalController.js
 //
-// CHANGES:
-//   • getInvestmentTrades — now saves WACC-sourced investment records into
-//     `investmententries` before returning them to the frontend, using the
-//     same waccId-based dedup pattern that getJournalTrades uses for journal
-//     entries. On first load each WACC investment record is inserted once;
-//     on subsequent loads the saved document is returned directly (no
-//     duplicate inserts). Live LTP/valueAsOfLtp are refreshed in-memory for
-//     display but the DB record is NOT overwritten on every load — only
-//     newly-seen WACC records are inserted.
-//   • investmentEntrySchema must have waccId field (see investmentEntrySchema.js).
+// JOURNAL:
+//   • Imported (MeroShare/WACC) trades are saved to journalentries on first load.
+//   • On every load, any ms-origin entry older than 60 days is auto-moved
+//     to investmententries (manual entries are never auto-moved).
+//   • TSN is assigned once on first save and never changes.
+//
+// INVESTMENT:
+//   • WACC records bucketed as "investment" (holding >60 days) are saved
+//     to investmententries on first load using a composite waccId as dedup key.
+//   • Manual investment entries are never touched by auto-move logic.
 //
 const { getModel } = require("../utils/userCollections");
 const logger       = require("../utils/logger");
@@ -165,10 +165,12 @@ function mapInvestmentEntry(entry) {
 // Strategy for imported (MeroShare) trades:
 //   1. Load all existing journalentries that have origin:"ms" — these are
 //      already saved with a stable TSN, treat them as-is.
-//   2. For any WACC record that does NOT yet have a saved journalentry,
+//   2. AUTO-MOVE: For any saved ms-origin journal entry whose boughtDate is
+//      now MORE than 60 days ago → move it to investmententries automatically.
+//      (Only ms-origin entries move. Manual entries never auto-move.)
+//   3. For any WACC record that does NOT yet have a saved journalentry,
 //      assign a TSN and INSERT a new journalentry (origin:"ms") right now.
-//   3. From that point on, every load reads the same saved document — TSN
-//      never changes.
+//   4. From that point on, every load reads the same saved document.
 //
 exports.getJournalTrades = async (req, res) => {
   try {
@@ -176,6 +178,7 @@ exports.getJournalTrades = async (req, res) => {
     const Wacc          = getModel(username, "waccs");
     const PortfolioItem = getModel(username, "portfolioitems");
     const JournalEntry  = getModel(username, "journalentries");
+    const InvestmentEntry = getModel(username, "investmententries");
 
     const [waccRecords, portfolioItems, allEntries] = await Promise.all([
       Wacc.find()
@@ -197,20 +200,68 @@ exports.getJournalTrades = async (req, res) => {
     const manualEntries   = allEntries.filter((e) => e.origin !== "ms");
     const importedEntries = allEntries.filter((e) => e.origin === "ms");
 
-    // Build a lookup: waccId → saved journal entry (for imported trades already persisted)
+    // ── AUTO-MOVE: ms-origin journal entries that crossed 60 days ─────────
+    // For each imported journal entry, check if boughtDate is now >60 days ago.
+    // If yes → remove from journalentries, insert into investmententries.
+    const toAutoMove = importedEntries.filter((e) => {
+      if (!e.boughtDate) return false;
+      return diffDays(e.boughtDate, new Date()) > HOLDING_THRESHOLD_DAYS;
+    });
+
+    if (toAutoMove.length > 0) {
+      logger.info(`  → Auto-moving ${toAutoMove.length} journal entry/entries to investment (>60 days).`);
+
+      for (const entry of toAutoMove) {
+        // Build investment doc from the journal entry's data
+        // Check if an investment entry for this waccId already exists (avoid duplicate)
+        const existing = entry.waccId
+          ? await InvestmentEntry.findOne({ waccId: entry.waccId }).lean()
+          : null;
+
+        if (!existing) {
+          await InvestmentEntry.create({
+            scrip:        entry.scrip,
+            sector:       "",
+            qty:          entry.qty,
+            buyRate:      entry.buyRate,
+            soldRate:     entry.sellRate && entry.sellRate > 0 ? entry.sellRate : null,
+            buyAmt:       entry.buyAmt,
+            soldAmt:      entry.soldAmt && entry.soldAmt > 0 ? entry.soldAmt : null,
+            ltp:          entry.ltp,
+            valueAsOfLtp: entry.valueAsOfLtp,
+            boughtDate:   entry.boughtDate,
+            soldDate:     entry.soldDate || null,
+            remarks:      entry.remarks || "",
+            imported:     entry.imported,
+            origin:       "ms",
+            waccId:       entry.waccId || "",
+          });
+        }
+
+        // Remove from journalentries
+        await JournalEntry.findByIdAndDelete(entry._id);
+      }
+    }
+
+    // Reload journal entries after auto-move (some were deleted above)
+    const remainingEntries = toAutoMove.length > 0
+      ? await JournalEntry.find().sort({ createdAt: 1 }).lean()
+      : allEntries;
+
+    const remainingManual   = remainingEntries.filter((e) => e.origin !== "ms");
+    const remainingImported = remainingEntries.filter((e) => e.origin === "ms");
+
+    // Build a lookup: waccId → saved journal entry
     const savedByWaccId = {};
-    importedEntries.forEach((e) => {
+    remainingImported.forEach((e) => {
       if (e.waccId) savedByWaccId[e.waccId] = e;
     });
 
     // Start TSN counter above the highest number already used anywhere in the DB
-    let tsnCounter = getNextTsnCounter(allEntries);
+    let tsnCounter = getNextTsnCounter(remainingEntries);
 
-    // Used for grouping nearby same-scrip WACC records into the same TSN
     const tsnHistory = {}; // scrip → [{ tsn, boughtDate }]
-
-    // Collect new entries that need to be persisted for the first time
-    const toInsert = [];
+    const toInsert   = [];
 
     // Build the full list of WACC-sourced journal records
     const waccJournalRecords = waccRecords
@@ -230,8 +281,6 @@ exports.getJournalTrades = async (req, res) => {
         const valueAsOfLtp = Number(live.valueOfLastTransPrice || 0) || (qty * ltp);
 
         if (savedByWaccId[waccId]) {
-          // ✅ Already saved — just return the saved document.
-          // Update live price fields in-memory for display (don't re-save on every load).
           const saved = savedByWaccId[waccId];
           return {
             ...mapJournalEntry(saved),
@@ -269,30 +318,73 @@ exports.getJournalTrades = async (req, res) => {
         };
 
         toInsert.push(newDoc);
-
-        return {
-          id: `ms_${waccId}`, // temporary id — replaced after insert
-          ...newDoc,
-        };
+        return null; // placeholder — replaced after insert
       });
 
-    // Persist all new imported entries to journalentries in one batch
+    // Persist all new imported entries first, then build response with real _ids
     if (toInsert.length > 0) {
       const inserted = await JournalEntry.insertMany(toInsert, { ordered: false });
-
-      const insertedByWaccId = {};
-      inserted.forEach((doc) => { insertedByWaccId[doc.waccId] = doc._id.toString(); });
-
-      waccJournalRecords.forEach((r) => {
-        if (r.id && r.id.startsWith("ms_")) {
-          const wid = r.id.replace("ms_", "");
-          if (insertedByWaccId[wid]) r.id = insertedByWaccId[wid];
+      let insertIdx = 0;
+      for (let i = 0; i < waccJournalRecords.length; i++) {
+        if (waccJournalRecords[i] === null) {
+          const doc = inserted[insertIdx++];
+          const live = portfolioMap[normalizeScript(doc.scrip)] || {};
+          waccJournalRecords[i] = {
+            ...mapJournalEntry(doc),
+            ltp:          Number(live.lastTransactionPrice || 0) || 0,
+            valueAsOfLtp: Number(live.valueOfLastTransPrice || 0) || 0,
+          };
         }
-      });
+      }
     }
 
-    const manualTrades = manualEntries.map(mapJournalEntry);
-    const trades = [...manualTrades, ...waccJournalRecords];
+    // ── Portfolio scripts with NO WACC record ──────────────────────────────
+    // These exist in MS Portfolio but MeroShare returned no WACC for them.
+    // Create a placeholder journal entry so they still appear in the UI.
+    const waccScripts = new Set(waccRecords.map((w) => normalizeScript(w.scrip)));
+    const portfolioOnlyJournal = [];
+
+    for (const item of portfolioItems) {
+      const scrip = normalizeScript(item.script);
+      if (!scrip || waccScripts.has(scrip)) continue;           // handled by WACC loop
+      if (buckets[scrip] !== "journal") continue;               // goes to investment tab
+      const alreadySaved = remainingEntries.some(
+        (e) => normalizeScript(e.scrip) === scrip && e.origin === "ms"
+      );
+      if (alreadySaved) {
+        const saved = remainingEntries.find(
+          (e) => normalizeScript(e.scrip) === scrip && e.origin === "ms"
+        );
+        const ltp = Number(item.lastTransactionPrice || 0) || 0;
+        const valueAsOfLtp = Number(item.valueOfLastTransPrice || 0) || 0;
+        portfolioOnlyJournal.push({ ...mapJournalEntry(saved), ltp, valueAsOfLtp });
+        continue;
+      }
+
+      const qty          = Number(item.currentBalance || 0);
+      const ltp          = Number(item.lastTransactionPrice || 0) || 0;
+      const valueAsOfLtp = Number(item.valueOfLastTransPrice || 0) || (qty * ltp);
+      const tsn          = `TSN${String(tsnCounter++).padStart(3, "0")}`;
+
+      const newDoc = {
+        tsn, scrip, qty,
+        buyRate: 0, sellRate: 0, buyAmt: 0, soldAmt: 0,
+        ltp, valueAsOfLtp,
+        boughtDate: "", soldDate: "", rr: "—",
+        remarks: "No WACC data — imported from portfolio",
+        imported: true, origin: "ms", waccId: `portfolio_${scrip}`,
+      };
+
+      try {
+        const inserted = await JournalEntry.create(newDoc);
+        portfolioOnlyJournal.push({ ...newDoc, id: inserted._id.toString() });
+      } catch (e) {
+        portfolioOnlyJournal.push({ id: `ms_portfolio_${scrip}`, ...newDoc });
+      }
+    }
+
+    const manualTrades = remainingManual.map(mapJournalEntry);
+    const trades = [...manualTrades, ...waccJournalRecords, ...portfolioOnlyJournal];
 
     res.json({ success: true, total: trades.length, data: trades });
   } catch (e) {
@@ -425,31 +517,69 @@ exports.getInvestmentTrades = async (req, res) => {
         };
 
         toInsert.push(newDoc);
-
-        return {
-          id: `ms_${script}`, // temporary id — replaced after insert
-          ...newDoc,
-        };
+        return null; // placeholder — replaced after insert
       });
 
-    // Persist all new imported investment entries in one batch
+    // Persist all new imported investment entries first, then return real _ids
     if (toInsert.length > 0) {
       const inserted = await InvestmentEntry.insertMany(toInsert, { ordered: false });
-
-      // Build lookup: scrip → real MongoDB _id
-      const insertedByScrip = {};
-      inserted.forEach((doc) => { insertedByScrip[doc.scrip] = doc._id.toString(); });
-
-      waccInvestmentRecords.forEach((r) => {
-        if (r.id && r.id.startsWith("ms_")) {
-          const scrip = r.id.replace("ms_", "");
-          if (insertedByScrip[scrip]) r.id = insertedByScrip[scrip];
+      let insertIdx = 0;
+      for (let i = 0; i < waccInvestmentRecords.length; i++) {
+        if (waccInvestmentRecords[i] === null) {
+          const doc = inserted[insertIdx++];
+          const live = portfolioMap[normalizeScript(doc.scrip)] || {};
+          waccInvestmentRecords[i] = {
+            ...mapInvestmentEntry(doc),
+            ltp:          Number(live.lastTransactionPrice || 0) || 0,
+            valueAsOfLtp: Number(live.valueOfLastTransPrice || 0) || 0,
+          };
         }
-      });
+      }
+    }
+
+    // ── Portfolio scripts with NO WACC record (investment bucket) ──────────
+    const waccScriptsInv = new Set(waccRecords.map((w) => normalizeScript(w.scrip)));
+    const portfolioOnlyInvest = [];
+
+    for (const item of portfolioItems) {
+      const scrip = normalizeScript(item.script);
+      if (!scrip || waccScriptsInv.has(scrip)) continue;       // handled by WACC loop
+      if (buckets[scrip] !== "investment") continue;            // goes to journal tab
+      const alreadySaved = allEntries.some(
+        (e) => normalizeScript(e.scrip) === scrip && e.origin === "ms"
+      );
+      if (alreadySaved) {
+        const saved = allEntries.find(
+          (e) => normalizeScript(e.scrip) === scrip && e.origin === "ms"
+        );
+        const ltp = Number(item.lastTransactionPrice || 0) || 0;
+        const valueAsOfLtp = Number(item.valueOfLastTransPrice || 0) || 0;
+        portfolioOnlyInvest.push({ ...mapInvestmentEntry(saved), ltp, valueAsOfLtp });
+        continue;
+      }
+
+      const qty          = Number(item.currentBalance || 0);
+      const ltp          = Number(item.lastTransactionPrice || 0) || 0;
+      const valueAsOfLtp = Number(item.valueOfLastTransPrice || 0) || (qty * ltp);
+
+      const newDoc = {
+        scrip, sector: "", qty,
+        buyRate: 0, soldRate: null, buyAmt: 0, soldAmt: null,
+        ltp, valueAsOfLtp, boughtDate: "", soldDate: null,
+        remarks: "No WACC data — imported from portfolio",
+        imported: true, origin: "ms", waccId: `portfolio_${scrip}`,
+      };
+
+      try {
+        const inserted = await InvestmentEntry.create(newDoc);
+        portfolioOnlyInvest.push({ ...mapInvestmentEntry(inserted), ltp, valueAsOfLtp });
+      } catch (e) {
+        portfolioOnlyInvest.push({ id: `ms_portfolio_${scrip}`, ...newDoc });
+      }
     }
 
     const manualTrades     = manualEntries.map(mapInvestmentEntry);
-    const investmentTrades = [...manualTrades, ...waccInvestmentRecords];
+    const investmentTrades = [...manualTrades, ...waccInvestmentRecords, ...portfolioOnlyInvest];
 
     res.json({ success: true, total: investmentTrades.length, data: investmentTrades });
   } catch (e) {
@@ -507,7 +637,7 @@ exports.updateJournalTrade = async (req, res) => {
     const payload      = parseBody(req.body);
     const entry = await JournalEntry.findByIdAndUpdate(
       req.params.id,
-      { ...payload, imported: false, origin: "manual" },
+      { ...payload },
       { new: true, runValidators: true }
     ).lean();
     if (!entry) return res.status(404).json({ success: false, message: "Journal entry not found." });
@@ -558,7 +688,7 @@ exports.updateInvestmentTrade = async (req, res) => {
     const payload         = parseBody(req.body);
     const entry = await InvestmentEntry.findByIdAndUpdate(
       req.params.id,
-      { ...payload, imported: false, origin: "manual" },
+      { ...payload },
       { new: true, runValidators: true }
     ).lean();
     if (!entry) return res.status(404).json({ success: false, message: "Investment entry not found." });

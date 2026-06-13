@@ -112,7 +112,7 @@ function JournalDashboard({ trades }) {
       {/* ── Stat cards ── */}
       <div className="stat-grid">
         <div className="stat-card">
-          <div className="stat-card__label">Total Invested</div>
+          <div className="stat-card__label">Total Traded Capital</div>
           <div className="stat-card__value v--blue">₹{fmt(total)}</div>
           <div className="stat-card__sub">Across all trades</div>
         </div>
@@ -285,7 +285,7 @@ function InvestmentDashboard({ investments }) {
       {/* ── Info stat cards ── */}
       <div className="stat-grid">
         <div className="stat-card">
-          <div className="stat-card__label">Total Scrips</div>
+          <div className="stat-card__label">Total Scripts</div>
           <div className="stat-card__value v--purple">{totalScrips}</div>
           <div className="stat-card__sub">Unique scrips invested</div>
         </div>
@@ -295,7 +295,7 @@ function InvestmentDashboard({ investments }) {
           <div className="stat-card__sub">Total capital deployed</div>
         </div>
         <div className="stat-card">
-          <div className="stat-card__label">Total Net P&amp;L</div>
+          <div className="stat-card__label">Net P&amp;L</div>
           <div className={`stat-card__value ${totalNetPL >= 0 ? "v--profit" : "v--loss"}`}>
             {totalNetPL >= 0 ? "+" : "-"}₹{fmt(Math.abs(totalNetPL))}
           </div>
