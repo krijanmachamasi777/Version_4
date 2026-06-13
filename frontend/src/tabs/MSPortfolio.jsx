@@ -19,26 +19,9 @@ export function MSPortfolio() {
     <div className="ms-wrap">
       <div className="stat-grid ms-summary">
         <div className="stat-card">
-          <div className="stat-card__label">Total Cost</div>
-          <div className="stat-card__value v--blue">NPR {fmt(cost)}</div>
-          <div className="stat-card__sub">Amount invested</div>
-        </div>
-        <div className="stat-card">
           <div className="stat-card__label">Market Value</div>
           <div className="stat-card__value">NPR {fmt(value)}</div>
           <div className="stat-card__sub">Current valuation</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-card__label">Unrealized P&L</div>
-          <div className={`stat-card__value ${gain >= 0 ? "v--profit" : "v--loss"}`}>
-            {gain >= 0 ? "+" : ""}NPR {fmt(gain)}
-          </div>
-          <div className="stat-card__sub">Market − Cost</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-card__label">Holdings</div>
-          <div className="stat-card__value v--purple">{items.length}</div>
-          <div className="stat-card__sub">Unique scripts</div>
         </div>
       </div>
 
