@@ -114,27 +114,66 @@ function getNextTsnCounter(allEntries) {
   return maxNum + 1;
 }
 
-async function assignTsnForManual(JournalEntry, scrip, boughtDate) {
+/**
+ * assignTsnForManual
+ *
+ * Finds or creates a TSN for a manual Journal entry.
+ *
+ * Algorithm:
+ *  1. Fetch all existing manual Journal entries for the same scrip that
+ *     already have a TSN, optionally excluding the record being updated
+ *     (excludeId) so it doesn't match itself.
+ *  2. Among those candidates, search for any whose boughtDate is within
+ *     12 calendar days of the new/updated boughtDate.
+ *     - Candidates are tested in chronological order so the earliest
+ *       matching group wins (stable grouping).
+ *  3. If a matching candidate exists → reuse its TSN (no new TSN created).
+ *  4. If no match → generate the next TSN (max across ALL entries + 1).
+ *
+ * @param {Model}  JournalEntry  - Mongoose model for the user's journalentries
+ * @param {string} scrip         - Scrip symbol (will be normalised)
+ * @param {string} boughtDate    - ISO date string of the trade being saved
+ * @param {string} [excludeId]   - MongoDB _id string to exclude from search
+ *                                 (pass the id of the record being updated)
+ * @returns {Promise<string>}    - TSN string like "TSN001"
+ */
+async function assignTsnForManual(JournalEntry, scrip, boughtDate, excludeId = null) {
   const normalScrip = normalizeScript(scrip);
 
-  const candidates = await JournalEntry.find({
+  // Build the query for same-scrip, manual-only candidates with a valid TSN.
+  // Imported (MeroShare) entries must never be touched by this logic.
+  const candidateQuery = {
     scrip:      normalScrip,
+    origin:     "manual",          // only manual entries participate in grouping
     tsn:        { $exists: true, $ne: "" },
     boughtDate: { $ne: "" },
-  }).select("tsn boughtDate").lean();
+  };
+
+  // When updating, exclude the record itself so it doesn't match its own TSN
+  if (excludeId) {
+    candidateQuery._id = { $ne: excludeId };
+  }
+
+  const candidates = await JournalEntry
+    .find(candidateQuery)
+    .select("tsn boughtDate")
+    .sort({ boughtDate: 1 })   // chronological → earliest group wins
+    .lean();
 
   if (boughtDate) {
     const newTime = new Date(boughtDate).getTime();
-    const match = candidates
-      .slice()
-      .reverse()
-      .find((c) => {
-        const diff = Math.abs(Math.round((newTime - new Date(c.boughtDate).getTime()) / 86400000));
-        return diff <= 12;
-      });
+    const match = candidates.find((c) => {
+      if (!c.boughtDate) return false;
+      const diff = Math.abs(
+        Math.round((newTime - new Date(c.boughtDate).getTime()) / 86400000)
+      );
+      return diff <= 12;
+    });
     if (match) return match.tsn;
   }
 
+  // No matching group found — allocate the next available TSN number.
+  // Search across ALL entries (manual + imported) so we never reuse a number.
   const all     = await JournalEntry.find({ tsn: { $regex: /^TSN\d+$/i } }).select("tsn").lean();
   const counter = getNextTsnCounter(all);
   return `TSN${String(counter).padStart(3, "0")}`;
@@ -692,12 +731,54 @@ exports.updateJournalTrade = async (req, res) => {
     const username     = getUserName(req);
     const JournalEntry = getModel(username, "journalentries");
     const payload      = parseBody(req.body);
+    const id           = req.params.id;
+
+    // Load the existing record first so we can detect field changes
+    const existing = await JournalEntry.findById(id).lean();
+    if (!existing) {
+      return res.status(404).json({ success: false, message: "Journal entry not found." });
+    }
+
+    // Determine whether scrip or boughtDate has changed — only then recalculate TSN.
+    // Imported (MeroShare) entries are never manually edited in practice, but
+    // we guard with the origin check to be absolutely safe.
+    const incomingScrip      = normalizeScript(payload.scrip || existing.scrip || "");
+    const incomingBoughtDate = (payload.boughtDate !== undefined ? payload.boughtDate : existing.boughtDate) || "";
+    const existingScrip      = normalizeScript(existing.scrip || "");
+    const existingBoughtDate = existing.boughtDate || "";
+
+    const scripChanged      = incomingScrip      !== existingScrip;
+    const boughtDateChanged = incomingBoughtDate !== existingBoughtDate;
+    const isManual          = (existing.origin || "manual") === "manual";
+
+    let tsnUpdate = {};
+
+    if (isManual && (scripChanged || boughtDateChanged)) {
+      // Recalculate TSN from scratch, excluding this record so it doesn't
+      // match its own (now-stale) TSN group.
+      const newTsn = await assignTsnForManual(
+        JournalEntry,
+        incomingScrip,
+        incomingBoughtDate,
+        id                // ← exclude self
+      );
+      tsnUpdate = { tsn: newTsn };
+    }
+
     const entry = await JournalEntry.findByIdAndUpdate(
+      id,
+      { ...payload, ...tsnUpdate, imported: false, origin: "manual" },
+
       req.params.id,
       { ...payload },
+
       { new: true, runValidators: true }
     ).lean();
-    if (!entry) return res.status(404).json({ success: false, message: "Journal entry not found." });
+
+    if (!entry) {
+      return res.status(404).json({ success: false, message: "Journal entry not found." });
+    }
+
     res.json({ success: true, data: mapJournalEntry(entry) });
   } catch (e) {
     logger.error(e);

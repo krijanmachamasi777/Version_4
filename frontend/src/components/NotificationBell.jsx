@@ -21,8 +21,8 @@ export function NotificationBell() {
   const ipoAlerts = issues.filter(isOrdinaryIPO);
 
   const [open,    setOpen]    = useState(false);
-  const [readIds, setReadIds] = useState(() => {
-    try { return new Set(JSON.parse(sessionStorage.getItem("notif_read") || "[]")); }
+const [readIds, setReadIds] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem("notif_read") || "[]")); }
     catch { return new Set(); }
   });
 
@@ -55,7 +55,7 @@ export function NotificationBell() {
           ...ipoAlerts.map(i => String(i.companyShareId)),
         ]);
         setReadIds(newRead);
-        sessionStorage.setItem("notif_read", JSON.stringify([...newRead]));
+        localStorage.setItem("notif_read", JSON.stringify([...newRead]));
       }
       return !o;
     });
@@ -71,17 +71,17 @@ export function NotificationBell() {
         title="IPO Notifications"
         style={{
           position:     "relative",
-          background:   open ? "rgba(10,132,255,0.15)" : "none",
-          border:       `1px solid ${open ? "rgba(10,132,255,0.4)" : "var(--b)"}`,
-          borderRadius: 8,
-          padding:      "5px 9px",
+          background:   "none",
+          border:       "none",
+          padding:      4,
           cursor:       "pointer",
           color:        open ? "var(--acc)" : "var(--muted)",
           fontSize:     18,
           lineHeight:   1,
-          transition:   "background 0.15s, color 0.15s",
+          transition:   "color 0.15s",
           display:      "flex",
           alignItems:   "center",
+          justifyContent: "center",
         }}
       >
         🔔
