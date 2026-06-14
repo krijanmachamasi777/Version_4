@@ -31,7 +31,14 @@ export const fmt      = n => Number(n || 0).toLocaleString("en-IN", { maximumFra
 export const isClosedTrade = trade => Boolean(trade && (trade.soldDate || Number(trade.soldAmt) > 0 || Number(trade.sellRate) > 0));
 export const tradePL       = trade => isClosedTrade(trade) ? Number(trade.soldAmt || 0) - Number(trade.buyAmt || 0) : null;
 export const pctRet       = (pl, amt) => amt ? ((pl / amt) * 100).toFixed(2) + "%" : "—";
-
+// ── JOURNAL / HISTORY SPLIT ───────────────────────────────
+// A sold trade "ages out" of the Journal tab once it has been
+// sold for `days` or more (default 90). It is NOT deleted —
+// it simply moves into the History view.
+export const isAgedOutTrade = (trade, days = 90) => {
+  if (!isClosedTrade(trade) || !trade.soldDate) return false;
+  return diffDays(trade.soldDate, todayStr()) >= days;
+};
 export const nextTSN = trades => {
   const nums = trades.map(t => {
     const tsn = typeof t?.tsn === "string" ? t.tsn.replace("TSN", "") : "";

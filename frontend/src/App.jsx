@@ -41,7 +41,12 @@ export default function App() {
 
   // Restore user object on page refresh
   useEffect(() => { hydrateUser(); }, [hydrateUser]);
-
+// Live clock — updates every second so the topbar shows real-time
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
   const [tab,          setTab]          = useState("dashboard");
   const [trades,       setTrades]       = useState([]);
   const [investments,  setInvestments]  = useState([]);
@@ -211,9 +216,16 @@ export default function App() {
             </div>
           )}
           <div className="topbar__date">
-            {new Date().toLocaleDateString("en-US", {
-              weekday: "short", year: "numeric", month: "short", day: "numeric",
-            })}
+            <div className="topbar__date-text">
+              {now.toLocaleDateString("en-US", {
+                weekday: "short", year: "numeric", month: "short", day: "numeric",
+              })}
+            </div>
+            <div className="topbar__time">
+              {now.toLocaleTimeString("en-US", {
+                hour: "2-digit", minute: "2-digit", second: "2-digit",
+              })}
+            </div>
           </div>
           <NotificationBell />
         </div>
