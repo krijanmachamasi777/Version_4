@@ -65,9 +65,25 @@ function getHoldingAge(scriptRecords) {
 // Returns { script → "journal" | "investment" } for every script
 // that appears in either waccRecords or portfolioItems.
 // Rule: holdingAge > HOLDING_THRESHOLD_DAYS → "investment", else → "journal"
-function getScriptBuckets(waccRecords, portfolioItems) {
+// For portfolio-only scripts (no WACC), falls back to boughtDate from saved DB entries.
+// savedEntries can be journal OR investment entries — we just need the earliest boughtDate.
+function getScriptBuckets(waccRecords, portfolioItems, savedEntries) {
+  const entries        = savedEntries || [];
   const waccIndex      = buildWaccIndex(waccRecords);
   const portfolioIndex = buildPortfolioIndex(portfolioItems);
+
+  // Build scrip → earliest boughtDate from saved DB entries (fallback for no-WACC scripts)
+  const savedBoughtDate = {};
+  entries.forEach((e) => {
+    if (!e.scrip) return;
+    const key  = normalizeScript(e.scrip);
+    const date = e.boughtDate || "";
+    if (!date) return; // skip empty dates — they don't help us determine age
+    if (!savedBoughtDate[key] || date < savedBoughtDate[key]) {
+      savedBoughtDate[key] = date;
+    }
+  });
+
   const scripts = new Set([
     ...Object.keys(waccIndex),
     ...Object.keys(portfolioIndex),
@@ -75,12 +91,17 @@ function getScriptBuckets(waccRecords, portfolioItems) {
 
   const buckets = {};
   scripts.forEach((script) => {
-    const holdingDays = getHoldingAge(waccIndex[script]);
+    let holdingDays = getHoldingAge(waccIndex[script]);
+    // Portfolio-only script with no WACC dates: use boughtDate from saved DB entry
+    if (!holdingDays && savedBoughtDate[script]) {
+      holdingDays = diffDays(savedBoughtDate[script], new Date());
+    }
     buckets[script] = holdingDays > HOLDING_THRESHOLD_DAYS ? "investment" : "journal";
   });
 
   return buckets;
 }
+
 
 // ── TSN HELPERS ───────────────────────────────────────────────────────────────
 
@@ -180,7 +201,7 @@ exports.getJournalTrades = async (req, res) => {
     const JournalEntry  = getModel(username, "journalentries");
     const InvestmentEntry = getModel(username, "investmententries");
 
-    const [waccRecords, portfolioItems, allEntries] = await Promise.all([
+    const [waccRecords, portfolioItems, allEntries, allInvestmentEntries] = await Promise.all([
       Wacc.find()
         .sort({ transactionDate: 1 })
         .select("scrip transactionQuantity rate transactionDate purchaseSource isin boid")
@@ -191,12 +212,16 @@ exports.getJournalTrades = async (req, res) => {
       JournalEntry.find()
         .sort({ createdAt: 1 })
         .lean(),
+      InvestmentEntry.find()
+        .select("scrip boughtDate origin")
+        .lean(),
     ]);
 
-    const buckets      = getScriptBuckets(waccRecords, portfolioItems);
+    // Combine both collections so getScriptBuckets sees boughtDate from whichever
+    // collection has it — critical for portfolio-only scrips with empty journalentries boughtDate
+    const allSavedForBuckets = [...allEntries, ...allInvestmentEntries];
+    const buckets      = getScriptBuckets(waccRecords, portfolioItems, allSavedForBuckets);
     const portfolioMap = buildPortfolioIndex(portfolioItems);
-
-    // Split existing entries into manual and already-saved imported ones
     const manualEntries   = allEntries.filter((e) => e.origin !== "ms");
     const importedEntries = allEntries.filter((e) => e.origin === "ms");
 
@@ -248,8 +273,22 @@ exports.getJournalTrades = async (req, res) => {
       ? await JournalEntry.find().sort({ createdAt: 1 }).lean()
       : allEntries;
 
-    const remainingManual   = remainingEntries.filter((e) => e.origin !== "ms");
-    const remainingImported = remainingEntries.filter((e) => e.origin === "ms");
+    // ── CLEANUP: remove any ms-origin journal entries whose scrip is now
+    // bucketed as "investment" (e.g. user edited boughtDate manually).
+    // These were already inserted into investmententries by updateJournalTrade,
+    // so they must not appear in the journal response too.
+    const staleJournalMs = remainingEntries.filter(
+      (e) => e.origin === "ms" && buckets[normalizeScript(e.scrip)] === "investment"
+    );
+    if (staleJournalMs.length > 0) {
+      await JournalEntry.deleteMany({ _id: { $in: staleJournalMs.map((e) => e._id) } });
+    }
+    const cleanedEntries = staleJournalMs.length > 0
+      ? remainingEntries.filter((e) => !staleJournalMs.some((s) => s._id.equals(e._id)))
+      : remainingEntries;
+
+    const remainingManual   = cleanedEntries.filter((e) => e.origin !== "ms");
+    const remainingImported = cleanedEntries.filter((e) => e.origin === "ms");
 
     // Build a lookup: waccId → saved journal entry
     const savedByWaccId = {};
@@ -258,7 +297,7 @@ exports.getJournalTrades = async (req, res) => {
     });
 
     // Start TSN counter above the highest number already used anywhere in the DB
-    let tsnCounter = getNextTsnCounter(remainingEntries);
+    let tsnCounter = getNextTsnCounter(cleanedEntries);
 
     const tsnHistory = {}; // scrip → [{ tsn, boughtDate }]
     const toInsert   = [];
@@ -282,6 +321,8 @@ exports.getJournalTrades = async (req, res) => {
 
         if (savedByWaccId[waccId]) {
           const saved = savedByWaccId[waccId];
+          // Always refresh live-price fields from portfolio sync.
+          // Preserve user-editable fields from the saved DB document.
           return {
             ...mapJournalEntry(saved),
             ltp,
@@ -348,11 +389,11 @@ exports.getJournalTrades = async (req, res) => {
       const scrip = normalizeScript(item.script);
       if (!scrip || waccScripts.has(scrip)) continue;           // handled by WACC loop
       if (buckets[scrip] !== "journal") continue;               // goes to investment tab
-      const alreadySaved = remainingEntries.some(
+      const alreadySaved = cleanedEntries.some(
         (e) => normalizeScript(e.scrip) === scrip && e.origin === "ms"
       );
       if (alreadySaved) {
-        const saved = remainingEntries.find(
+        const saved = cleanedEntries.find(
           (e) => normalizeScript(e.scrip) === scrip && e.origin === "ms"
         );
         const ltp = Number(item.lastTransactionPrice || 0) || 0;
@@ -412,11 +453,12 @@ exports.getJournalTrades = async (req, res) => {
 exports.getInvestmentTrades = async (req, res) => {
   try {
     const username = getUserName(req);
-    const Wacc           = getModel(username, "waccs");
-    const PortfolioItem  = getModel(username, "portfolioitems");
+    const Wacc            = getModel(username, "waccs");
+    const PortfolioItem   = getModel(username, "portfolioitems");
     const InvestmentEntry = getModel(username, "investmententries");
+    const JournalEntry    = getModel(username, "journalentries");
 
-    const [waccRecords, portfolioItems, allEntries] = await Promise.all([
+    const [waccRecords, portfolioItems, allEntries, allJournalEntries] = await Promise.all([
       Wacc.find()
         .sort({ transactionDate: 1 })
         .select("scrip transactionQuantity rate transactionDate purchaseSource isin boid")
@@ -427,9 +469,16 @@ exports.getInvestmentTrades = async (req, res) => {
       InvestmentEntry.find()
         .sort({ createdAt: 1 })
         .lean(),
+      JournalEntry.find()
+        .select("scrip boughtDate origin")
+        .lean(),
     ]);
 
-    const buckets      = getScriptBuckets(waccRecords, portfolioItems);
+    // Combine investment + journal entries so getScriptBuckets can use boughtDate
+    // from either collection when deciding bucket for portfolio-only scripts
+    const allSavedForBuckets = [...allEntries, ...allJournalEntries];
+
+    const buckets      = getScriptBuckets(waccRecords, portfolioItems, allSavedForBuckets);
     const portfolioMap = buildPortfolioIndex(portfolioItems);
     const waccIndex    = buildWaccIndex(waccRecords);
 
@@ -440,8 +489,10 @@ exports.getInvestmentTrades = async (req, res) => {
     // Build lookup: waccId (the composite key string) → saved investment entry
     // waccId for investment entries is a JSON array string of sorted WACC _ids
     const savedByWaccId = {};
+    const savedByScrip  = {}; // fallback when compositeWaccId shifted
     importedEntries.forEach((e) => {
       if (e.waccId) savedByWaccId[e.waccId] = e;
+      if (e.scrip)  savedByScrip[normalizeScript(e.scrip)] = e;
     });
 
     const toInsert = [];
@@ -486,10 +537,11 @@ exports.getInvestmentTrades = async (req, res) => {
           ? `Source: ${records[0].purchaseSource || "MeroShare"}`
           : "Imported from MeroShare";
 
-        if (savedByWaccId[compositeWaccId]) {
+        if (savedByWaccId[compositeWaccId] || savedByScrip[script]) {
           // ✅ Already saved in investmententries — return saved document.
-          // Refresh live price fields in-memory for display only.
-          const saved = savedByWaccId[compositeWaccId];
+          // Use compositeWaccId match first, fall back to scrip match.
+          // Only refresh live-price fields — preserve any user edits (buyRate, buyAmt, sector, etc.)
+          const saved = savedByWaccId[compositeWaccId] || savedByScrip[script];
           return {
             ...mapInvestmentEntry(saved),
             ltp,
@@ -538,13 +590,18 @@ exports.getInvestmentTrades = async (req, res) => {
     }
 
     // ── Portfolio scripts with NO WACC record (investment bucket) ──────────
-    const waccScriptsInv = new Set(waccRecords.map((w) => normalizeScript(w.scrip)));
+    // Skip any scrip already returned via the savedByScrip fallback above
+    const waccScriptsInv  = new Set(waccRecords.map((w) => normalizeScript(w.scrip)));
+    const alreadyReturned = new Set(
+      waccInvestmentRecords.filter(Boolean).map((r) => normalizeScript(r.scrip))
+    );
     const portfolioOnlyInvest = [];
 
     for (const item of portfolioItems) {
       const scrip = normalizeScript(item.script);
       if (!scrip || waccScriptsInv.has(scrip)) continue;       // handled by WACC loop
       if (buckets[scrip] !== "investment") continue;            // goes to journal tab
+      if (alreadyReturned.has(scrip)) continue;                 // already returned via savedByScrip
       const alreadySaved = allEntries.some(
         (e) => normalizeScript(e.scrip) === scrip && e.origin === "ms"
       );

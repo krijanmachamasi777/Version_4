@@ -320,3 +320,148 @@
   .dash-switcher { width: 100%; }
   .dash-switch-btn { flex: 1; text-align: center; padding: 8px 10px; font-size: 12px; }
 }
+/* ── INSIGHT / WARNING BANNER ───────────────────────────── */
+.insight-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--b);
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.insight-banner--warn {
+  border-color: rgba(255, 159, 10, 0.35);
+  background: rgba(255, 159, 10, 0.08);
+  color: var(--fg);
+}
+
+.insight-banner__icon { font-size: 18px; line-height: 1; }
+
+/* ── METRIC TOGGLE BUTTONS (e.g. sector by qty / value) ──── */
+.toggle-group {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--s2);
+  border: 1px solid var(--b);
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 16px;
+}
+
+.toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+
+.toggle-btn:hover { color: var(--fg); }
+
+.toggle-btn--active {
+  background: rgba(10, 132, 255, 0.15);
+  color: var(--glow);
+}
+
+.chart-box__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── HOLDING-PERIOD COMPARISON BARS ─────────────────────── */
+.holding-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.holding-compare__row {
+  display: grid;
+  grid-template-columns: 110px 1fr 70px;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.holding-compare__label { color: var(--muted); }
+
+.holding-compare__track {
+  height: 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.holding-compare__fill {
+  height: 100%;
+  border-radius: 6px;
+  transition: width 0.4s ease;
+}
+
+.holding-compare__fill--win  { background: var(--g); }
+.holding-compare__fill--loss { background: var(--r); }
+
+.holding-compare__value {
+  font-family: var(--mono);
+  font-weight: 700;
+  text-align: right;
+}
+
+/* ── MINI STAT ROW (open positions summary etc.) ────────── */
+.mini-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.mini-stat {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--b);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.mini-stat__label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--muted);
+  opacity: 0.65;
+  margin-bottom: 4px;
+}
+
+.mini-stat__value {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+/* ── STREAK BADGE ────────────────────────────────────────── */
+.streak-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.streak-badge--win  { color: var(--g); }
+.streak-badge--loss { color: var(--r); }
+.streak-badge--none { color: var(--muted); }

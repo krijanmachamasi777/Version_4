@@ -141,7 +141,7 @@ export function Investment({ investments, onScripClick }) {
                           {inv.scrip}
                         </button>
                         {inv.imported && (
-                          <span className="badge badge--small" title="Imported from MeroShare">🤖</span>
+                          <span className="badge badge--small" title="Imported from MeroShare"></span>
                         )}
                         {isSold && (
                           <span className="badge badge--sold" title="This investment has been sold">✓ SOLD</span>

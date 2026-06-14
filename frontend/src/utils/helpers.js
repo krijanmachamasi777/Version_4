@@ -74,6 +74,85 @@ const avgByQty = (entries, fn) => {
 export const groupAnnG = entries => avgByQty(entries, annG);
 export const groupMonG = entries => avgByQty(entries, monG);
 
+// ── DASHBOARD ANALYTICS HELPERS ────────────────────────────
+// Shared formatter for any ± P&L value → { text, cls } for stat cards.
+export const formatPL = value => {
+  const v = Number(value || 0);
+  return {
+    text: `${v >= 0 ? "+" : "-"}₹${fmt(Math.abs(v))}`,
+    cls: v >= 0 ? "v--profit" : "v--loss",
+  };
+};
+
+// Gross profit ÷ gross loss across closed trades. Returns null when there's
+// no loss data yet (avoids showing a misleading ∞ on a fresh journal).
+export const profitFactor = closedTrades => {
+  let grossProfit = 0, grossLoss = 0;
+  closedTrades.forEach(t => {
+    const pl = tradePL(t);
+    if (pl > 0) grossProfit += pl;
+    else if (pl < 0) grossLoss += Math.abs(pl);
+  });
+  if (!grossLoss) return grossProfit > 0 ? null : 0;
+  return grossProfit / grossLoss;
+};
+
+// Average size of winning vs losing closed trades.
+export const avgWinLoss = closedTrades => {
+  const wins   = closedTrades.map(tradePL).filter(pl => pl > 0);
+  const losses = closedTrades.map(tradePL).filter(pl => pl < 0).map(Math.abs);
+  const avg = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  return { avgWin: avg(wins), avgLoss: avg(losses) };
+};
+
+// Expected ₹ outcome of the "average" closed trade.
+export const expectancy = closedTrades => {
+  if (!closedTrades.length) return 0;
+  const total = closedTrades.reduce((s, t) => s + tradePL(t), 0);
+  return total / closedTrades.length;
+};
+
+// Win/loss streaks based on chronological close order.
+// Returns current streak (with type) plus the best win streak and worst loss streak.
+export const tradeStreaks = closedTrades => {
+  const sorted = closedTrades
+    .filter(t => t.soldDate)
+    .sort((a, b) => (a.soldDate < b.soldDate ? -1 : 1));
+
+  let runWin = 0, runLoss = 0, bestWin = 0, worstLoss = 0;
+  let current = 0, currentType = null;
+
+  sorted.forEach(t => {
+    const pl = tradePL(t);
+    if (pl > 0) {
+      runWin += 1; runLoss = 0;
+      bestWin = Math.max(bestWin, runWin);
+      current = runWin; currentType = "win";
+    } else if (pl < 0) {
+      runLoss += 1; runWin = 0;
+      worstLoss = Math.max(worstLoss, runLoss);
+      current = runLoss; currentType = "loss";
+    } else {
+      runWin = 0; runLoss = 0; current = 0; currentType = null;
+    }
+  });
+
+  return { current, currentType, bestWin, worstLoss };
+};
+
+// True when an entry has a real live price from MeroShare (ltp > 0).
+// Manual/never-synced entries default ltp to 0, so we treat that as
+// "no live data" rather than a -100% loss.
+export const hasLivePrice = item => Number(item?.ltp || 0) > 0;
+
+// Unrealized P&L for an open position, or null if no live price yet.
+export const unrealizedPL = item =>
+  hasLivePrice(item) ? Number(item.valueAsOfLtp || 0) - Number(item.buyAmt || 0) : null;
+
+// % change of `current` vs `base`, or null if base is 0/unknown.
+export const pctChange = (current, base) =>
+  base ? ((Number(current) - Number(base)) / Number(base)) * 100 : null;
+
 export const secBadge = s => {
   const m = {
     Finance: "finance", Banking: "banking", IT: "it", Hydro: "it",
