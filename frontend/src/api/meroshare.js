@@ -47,3 +47,8 @@ export const updateInvestmentTrade = (token, id, payload) =>
 
 export const deleteInvestmentTrade = (token, id) =>
   apiFetch(`/investment-trades/${id}`, token, { method: "DELETE" });
+// ── Watchlist items ─────────────────────────────────────────────────────
+export const getWatchlistItems   = (token)         => apiFetch("/watchlist-items", token);
+export const createWatchlistItem = (token, payload) => apiFetch("/watchlist-items", token, { method: "POST", body: JSON.stringify(payload) });
+export const updateWatchlistItem = (token, id, payload) => apiFetch(`/watchlist-items/${id}`, token, { method: "PUT", body: JSON.stringify(payload) });
+export const deleteWatchlistItem = (token, id)      => apiFetch(`/watchlist-items/${id}`, token, { method: "DELETE" });

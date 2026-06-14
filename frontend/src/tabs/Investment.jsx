@@ -66,7 +66,7 @@ export function Investment({ investments, onScripClick }) {
       <div className="card__header">
         <div>
           <div className="card__title">Investment Portfolio</div>
-          <div className="card__sub">Click any SCRIP to view all entries · Edit · Delete</div>
+          <div className="card__sub">Click any SCRIPT to view all entries · Edit · Delete</div>
         </div>
         <div className="inv-badges">
           <span className="status-badge sb--holding">⬤ {holdingCount} Holding</span>
@@ -79,7 +79,7 @@ export function Investment({ investments, onScripClick }) {
           <thead>
             <tr>
               <th>SN</th>
-              <th>SCRIP</th>
+              <th>SCRIPT</th>
               <th>Sector</th>
               <th>Quantity</th>
               <th>Buy Rate</th>
@@ -128,7 +128,10 @@ export function Investment({ investments, onScripClick }) {
               return (
                 <tr
                   key={inv.id}
-                  className={isNewGroup ? "inv-row--group-start" : "inv-row--group-cont"}
+                  className={[
+                    isNewGroup ? "inv-row--group-start" : "inv-row--group-cont",
+                    isSold ? "tr--sold" : "",
+                  ].filter(Boolean).join(" ")}
                 >
                   <td className="td--muted">{isNewGroup ? sn : ""}</td>
                   <td>
@@ -138,7 +141,10 @@ export function Investment({ investments, onScripClick }) {
                           {inv.scrip}
                         </button>
                         {inv.imported && (
-                          <span className="badge badge--small" title="Imported from MeroShare">🤖</span>
+                          <span className="badge badge--small" title="Imported from MeroShare"></span>
+                        )}
+                        {isSold && (
+                          <span className="badge badge--sold" title="This investment has been sold">✓ SOLD</span>
                         )}
                       </div>
                     ) : null}

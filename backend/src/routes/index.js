@@ -4,6 +4,7 @@ const ctrl             = require("../controllers/index");
 const authCtrl         = require("../controllers/authController");
 const notificationCtrl = require("../controllers/notificationController");
 const journalCtrl      = require("../controllers/journalController");
+const watchlistCtrl    = require("../controllers/watchlistController");
 const protect          = require("../middleware/auth");
 
 router.get("/health", (req, res) =>
@@ -46,5 +47,10 @@ router.put("/investment-trades/:id", journalCtrl.updateInvestmentTrade);
 router.delete("/investment-trades/:id", journalCtrl.deleteInvestmentTrade);
 
 router.get("/sync/logs",           ctrl.getSyncLogs);
+
+router.get("/watchlist-items",           watchlistCtrl.getWatchlistItems);
+router.post("/watchlist-items",          watchlistCtrl.createWatchlistItem);
+router.put("/watchlist-items/:id",       watchlistCtrl.updateWatchlistItem);
+router.delete("/watchlist-items/:id",    watchlistCtrl.deleteWatchlistItem);
 
 module.exports = router;

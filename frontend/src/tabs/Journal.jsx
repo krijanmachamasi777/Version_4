@@ -26,7 +26,7 @@ export function Journal({ trades, onScripClick }) {
       <div className="card__header">
         <div>
           <div className="card__title">Trade Journal</div>
-          <div className="card__sub">Click any SCRIP to view · Edit · Delete</div>
+          <div className="card__sub">Click any SCRIPT to view · Edit · Delete</div>
         </div>
         <div className="journal-header__right">
           <button className="btn btn--history" onClick={() => setShowHistory(true)}>

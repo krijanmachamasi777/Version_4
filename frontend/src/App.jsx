@@ -1,8 +1,6 @@
 // src/App.jsx
-import { useState, useMemo, useEffect } from "react";
+import { useState, useEffect } from "react";
 import "./styles/global.css";
-import { INIT_WATCH } from "./data/initialData";
-import { uid, loadFromStorage, saveToStorage } from "./utils/helpers";
 import { useAuth } from "./context/AuthContext";
 import { LoginPage } from "./pages/LoginPage";
 import { Dashboard } from "./tabs/Dashboard";
@@ -28,7 +26,7 @@ const TABS = [
   { id: "losing",       label: "📉 Losing" },
   { id: "ms-portfolio", label: "🏦 MS Portfolio", ms: true },
   { id: "ms-ipos",      label: "📋 Open IPOs",    ms: true },
-  { id: "ms-wacc",      label: "⚖ WACC",          ms: true },
+  //{ id: "ms-wacc",      label: "⚖ WACC",          ms: true },
 ];
 
 export default function App() {
@@ -37,6 +35,7 @@ export default function App() {
     fetchJournalTrades, fetchInvestmentTrades,
     createTrade, updateTrade: updateJournal, deleteTrade: deleteJournal,
     createInvestment, updateInvestment: updateInvDB, deleteInvestment: deleteInvDB,
+    fetchWatchlistItems, createWatchItem, updateWatchItem, deleteWatchItem,
   } = useAuth();
 
   // Restore user object on page refresh
@@ -51,15 +50,14 @@ export default function App() {
   const [trades,       setTrades]       = useState([]);
   const [investments,  setInvestments]  = useState([]);
   const [dataLoaded,   setDataLoaded]   = useState(false);
-  const [watchlist,    setWatchlist]    = useState(() => loadFromStorage("watchlist", INIT_WATCH));
+  const [watchlist, setWatchlist] = useState([]);
   const [tradeDetail,  setTradeDetail]  = useState(null);
   const [tradeForm,    setTradeForm]    = useState(null);
   const [invDetail,    setInvDetail]    = useState(null);
   const [invForm,      setInvForm]      = useState(null);
   const [watchForm,    setWatchForm]    = useState(null);
 
-  useMemo(() => { saveToStorage("watchlist", watchlist); }, [watchlist]);
-
+  
   // ── Load trades & investments from DB whenever user logs in ──────────
   useEffect(() => {
     if (!isLoggedIn) {
@@ -74,17 +72,20 @@ export default function App() {
     Promise.all([
       fetchJournalTrades().catch(() => []),
       fetchInvestmentTrades().catch(() => []),
-    ]).then(([journalRes, investRes]) => {
+      fetchWatchlistItems().catch(() => []),
+    ]).then(([journalRes, investRes, watchRes]) => {
       if (cancelled) return;
-      const journalArr  = Array.isArray(journalRes)  ? journalRes  : (journalRes?.data  || []);
-      const investArr   = Array.isArray(investRes)   ? investRes   : (investRes?.data   || []);
+      const journalArr = Array.isArray(journalRes) ? journalRes : (journalRes?.data || []);
+      const investArr  = Array.isArray(investRes)  ? investRes  : (investRes?.data  || []);
+      const watchArr   = Array.isArray(watchRes)   ? watchRes   : (watchRes?.data   || []);
       setTrades(journalArr);
       setInvestments(investArr);
+      setWatchlist(watchArr);
       setDataLoaded(true);
     });
 
     return () => { cancelled = true; };
-  }, [isLoggedIn, fetchJournalTrades, fetchInvestmentTrades]);
+  }, [isLoggedIn, fetchJournalTrades, fetchInvestmentTrades, fetchWatchlistItems]);
 
   // ── CRUD — Journal trades ─────────────────────────────────────────────
   const addTrade = async (d) => {
@@ -132,10 +133,25 @@ export default function App() {
     } catch (e) { console.warn("Failed to delete investment", e); }
   };
 
-  // ── Watchlist (localStorage only) ────────────────────────────────────
-  const addWatch = d  => setWatchlist(p => [...p, { ...d, id: uid() }]);
-  const updWatch = (id, d) => setWatchlist(p => p.map(w => w.id === id ? { ...w, ...d } : w));
-  const delWatch = id => setWatchlist(p => p.filter(w => w.id !== id));
+// ── Watchlist (database) ──────────────────────────────────────────────
+  const addWatch = async (d) => {
+    try {
+      const saved = await createWatchItem(d);
+      setWatchlist(p => [...p, saved]);
+    } catch (e) { console.warn("Failed to save watchlist item", e); }
+  };
+  const updWatch = async (id, d) => {
+    try {
+      const updated = await updateWatchItem(id, d);
+      setWatchlist(p => p.map(w => w.id === id ? { ...w, ...updated } : w));
+    } catch (e) { console.warn("Failed to update watchlist item", e); }
+  };
+  const delWatch = async (id) => {
+    try {
+      await deleteWatchItem(id);
+      setWatchlist(p => p.filter(w => w.id !== id));
+    } catch (e) { console.warn("Failed to delete watchlist item", e); }
+  };
 
   const handleTabClick = id => setTab(id);
   const handleFAB = () => {
